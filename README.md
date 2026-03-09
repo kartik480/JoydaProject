@@ -1,6 +1,6 @@
-# joyda
+# JoydaProject
 
-A new Flutter project.
+A Flutter project (Joyda).
 
 ## Getting Started
 
