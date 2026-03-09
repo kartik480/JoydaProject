@@ -4,6 +4,7 @@ import '../../core/app_colors.dart';
 import '../../core/app_typography.dart';
 import '../../core/app_state.dart';
 import 'grade_games_screen.dart';
+import 'level_dashboard_screen.dart';
 
 class StudentHomeScreen extends StatefulWidget {
   const StudentHomeScreen({super.key});
@@ -252,11 +253,19 @@ class _GradeGridCard extends StatelessWidget {
         child: InkWell(
           onTap: () {
             state.setSelectedGrade(grade);
-            Navigator.of(context).push(
-              MaterialPageRoute(
-                builder: (context) => GradeGamesScreen(grade: grade),
-              ),
-            );
+            if (grade == Grade.lkg) {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (context) => LevelDashboardScreen(grade: grade),
+                ),
+              );
+            } else {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (context) => GradeGamesScreen(grade: grade),
+                ),
+              );
+            }
           },
           borderRadius: BorderRadius.circular(16),
           child: Container(
