@@ -36,6 +36,7 @@ dependencies:
   cupertino_icons: ^1.0.8
   provider: ^6.1.2
   google_fonts: ^6.2.1
+  flame: ^1.19.0
 
 dev_dependencies:
   flutter_test:
@@ -78,6 +79,12 @@ flutter:
     - images/
     - images/logo.png
     - images/fulllogo.png
+    - images/container.png
+    - images/ball.png
+    - images/rock.png
+    - images/sponge.png
+    - images/paper.png
+    - images/leaf.png
 
   fonts:
     - family: Baloo 2
