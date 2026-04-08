@@ -4,7 +4,7 @@ import '../../core/app_colors.dart';
 import '../../core/app_typography.dart';
 import '../../core/app_state.dart';
 import 'grade_games_screen.dart';
-import 'level_dashboard_screen.dart';
+import 'lkg_game_cards_screen.dart';
 
 class StudentHomeScreen extends StatefulWidget {
   const StudentHomeScreen({super.key});
@@ -253,10 +253,10 @@ class _GradeGridCard extends StatelessWidget {
         child: InkWell(
           onTap: () {
             state.setSelectedGrade(grade);
-            if (grade == Grade.lkg) {
+            if (grade == Grade.lkg || grade == Grade.ukg) {
               Navigator.of(context).push(
                 MaterialPageRoute(
-                  builder: (context) => LevelDashboardScreen(grade: grade),
+                  builder: (context) => LkgGameCardsScreen(grade: grade),
                 ),
               );
             } else {
@@ -298,7 +298,7 @@ class _GradeGridCard extends StatelessWidget {
                   style: AppTypography.screenTitle(fontSize: 17, color: AppColors.studentHeaderNav),
                 ),
                 Text(
-                  grade.isLowerGrade ? '3 games · All open' : 'Sequential unlock',
+                  grade.isLowerGrade ? '${games.length} games · All open' : 'Sequential unlock',
                   textAlign: TextAlign.center,
                   style: AppTypography.body(fontSize: 12),
                 ),

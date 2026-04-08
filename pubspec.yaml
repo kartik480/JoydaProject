@@ -37,6 +37,8 @@ dependencies:
   provider: ^6.1.2
   google_fonts: ^6.2.1
   flame: ^1.19.0
+  flutter_tts: ^4.2.0
+  video_player: ^2.11.1
 
 dev_dependencies:
   flutter_test:

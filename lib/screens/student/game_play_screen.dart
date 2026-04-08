@@ -3,6 +3,9 @@ import 'package:provider/provider.dart';
 import '../../core/app_colors.dart';
 import '../../core/app_typography.dart';
 import '../../core/app_state.dart';
+import 'grade_math_games_screen.dart';
+import 'grade_science_games_screen.dart';
+import 'sentence_builder_game_screen.dart';
 
 class GamePlayScreen extends StatefulWidget {
   final Grade grade;
@@ -18,10 +21,24 @@ class _GamePlayScreenState extends State<GamePlayScreen> {
   bool _completed = false;
   DateTime? _startTime;
 
+  bool get _isSentenceBuilder =>
+      widget.game.id == 'lkg5' || widget.game.id == 'ukg5';
+
+  bool get _isGradeMathGame {
+    const ids = {'g41', 'g42', 'g43', 'g51', 'g52', 'g53'};
+    return ids.contains(widget.game.id);
+  }
+
+  bool get _isGradeScienceGame {
+    const ids = {'g4sci1', 'g4sci2', 'g4sci3', 'g5sci1', 'g5sci2', 'g5sci3'};
+    return ids.contains(widget.game.id);
+  }
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _isSentenceBuilder || _isGradeMathGame || _isGradeScienceGame) return;
       context.read<AppState>().startGame(widget.grade, widget.game.id);
       setState(() => _startTime = DateTime.now());
     });
@@ -45,6 +62,29 @@ class _GamePlayScreenState extends State<GamePlayScreen> {
       return _SuccessScreen(
         game: widget.game,
         onDone: () => Navigator.of(context).popUntil((Route<dynamic> route) => route.isFirst),
+      );
+    }
+
+    if (_isSentenceBuilder) {
+      return SentenceBuilderGameScreen(
+        grade: widget.grade,
+        gameId: widget.game.id,
+      );
+    }
+
+    if (_isGradeMathGame) {
+      return GradeMathGamesScreen(
+        grade: widget.grade,
+        gameId: widget.game.id,
+        kind: mathGameKindForId(widget.game.id),
+      );
+    }
+
+    if (_isGradeScienceGame) {
+      return GradeScienceGamesScreen(
+        grade: widget.grade,
+        gameId: widget.game.id,
+        kind: scienceGameKindForId(widget.game.id),
       );
     }
 

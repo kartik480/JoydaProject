@@ -15,6 +15,14 @@ class GradeGamesScreen extends StatefulWidget {
 
 class _GradeGamesScreenState extends State<GradeGamesScreen> {
   int _navIndex = 1; // Games selected
+  _UpperSubjectFilter _subjectFilter = _UpperSubjectFilter.maths;
+
+  bool get _isUpperGrade =>
+      widget.grade == Grade.grade4 || widget.grade == Grade.grade5;
+
+  bool _isScienceGame(GameInfo game) {
+    return game.id.startsWith('g4sci') || game.id.startsWith('g5sci');
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -36,11 +44,14 @@ class _GradeGamesScreenState extends State<GradeGamesScreen> {
 
   Widget _buildHeader(BuildContext context) {
     final (badgeBg, badgeIcon) = _gradeBadgeStyle(widget.grade);
-    final subtitle = widget.grade.isLowerGrade
-        ? '3 games · All unlocked · Free exploration'
-        : '3 games · Sequential unlock';
 
-    return Container(
+    return Consumer<AppState>(builder: (context, state, _) {
+      final n = state.gamesFor(widget.grade).length;
+      final subtitle = widget.grade.isLowerGrade
+          ? '$n games · All unlocked · Free exploration'
+          : '$n games · Sequential unlock';
+
+      return Container(
       width: double.infinity,
       decoration: BoxDecoration(
         gradient: const LinearGradient(
@@ -131,6 +142,7 @@ class _GradeGamesScreenState extends State<GradeGamesScreen> {
         ],
       ),
     );
+    });
   }
 
   (Color, IconData) _gradeBadgeStyle(Grade grade) {
@@ -149,34 +161,78 @@ class _GradeGamesScreenState extends State<GradeGamesScreen> {
   Widget _buildContent(BuildContext context) {
     return Consumer<AppState>(
       builder: (context, state, _) {
-        final games = state.gamesFor(widget.grade);
-        return ListView.builder(
-          padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
-          itemCount: games.length,
-            itemBuilder: (context, index) {
-              final game = games[index];
-              final unlocked = state.isGameUnlocked(widget.grade, game.id);
-              final progress = state.getGameProgress(widget.grade, game.id);
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 14),
-                child: _GameListCard(
-                  game: game,
-                  unlocked: unlocked,
-                  progress: progress,
-                  onTap: unlocked
-                      ? () {
-                          Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (context) => GamePlayScreen(grade: widget.grade, game: game),
-                            ),
-                          );
-                        }
-                      : null,
-                ),
-              );
-            },
-          );
+        final allGames = state.gamesFor(widget.grade);
+        final games = _isUpperGrade
+            ? allGames
+                .where(
+                  (game) => _subjectFilter == _UpperSubjectFilter.maths
+                      ? !_isScienceGame(game)
+                      : _isScienceGame(game),
+                )
+                .toList()
+            : allGames;
+
+        return Column(
+          children: [
+            if (_isUpperGrade) _buildSubjectTabs(),
+            Expanded(
+              child: ListView.builder(
+                padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
+                itemCount: games.length,
+                itemBuilder: (context, index) {
+                  final game = games[index];
+                  final unlocked = state.isGameUnlocked(widget.grade, game.id);
+                  final progress = state.getGameProgress(widget.grade, game.id);
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 14),
+                    child: _GameListCard(
+                      game: game,
+                      unlocked: unlocked,
+                      progress: progress,
+                      onTap: unlocked
+                          ? () {
+                              Navigator.of(context).push(
+                                MaterialPageRoute(
+                                  builder: (context) => GamePlayScreen(grade: widget.grade, game: game),
+                                ),
+                              );
+                            }
+                          : null,
+                    ),
+                  );
+                },
+              ),
+            ),
+          ],
+        );
         },
+    );
+  }
+
+  Widget _buildSubjectTabs() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+      child: Row(
+        children: [
+          Expanded(
+            child: _SubjectButton(
+              label: 'Maths',
+              selected: _subjectFilter == _UpperSubjectFilter.maths,
+              onTap: () => setState(() => _subjectFilter = _UpperSubjectFilter.maths),
+              icon: Icons.calculate_rounded,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: _SubjectButton(
+              label: 'Science',
+              selected: _subjectFilter == _UpperSubjectFilter.science,
+              onTap: () => setState(() => _subjectFilter = _UpperSubjectFilter.science),
+              icon: Icons.science_rounded,
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -383,17 +439,14 @@ class _GameIcon extends StatelessWidget {
       case 'ukg3':
         return Icons.arrow_forward_rounded; // What Comes Next?
       case 'g41':
-        return Icons.close_rounded; // Multiplication Master
-      case 'g42':
-        return Icons.text_fields_rounded; // Word Builder
-      case 'g43':
-        return Icons.psychology_rounded; // Logic Puzzles
       case 'g51':
-        return Icons.pie_chart_rounded; // Fractions Fun
+        return Icons.shield_moon_rounded; // Math Battle
+      case 'g42':
       case 'g52':
-        return Icons.science_rounded; // Science Quiz
+        return Icons.route_rounded; // Math Adventure
+      case 'g43':
       case 'g53':
-        return Icons.lightbulb_rounded; // Critical Thinking
+        return Icons.emoji_events_rounded; // Math Master Challenge
       default:
         return Icons.sports_esports_rounded;
     }
@@ -491,6 +544,60 @@ class _NavItem extends StatelessWidget {
             style: (selected ? AppTypography.cardTitle(fontSize: 12) : AppTypography.body(fontSize: 12)).copyWith(color: textColor),
           ),
         ],
+      ),
+    );
+  }
+}
+
+enum _UpperSubjectFilter { maths, science }
+
+class _SubjectButton extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+  final IconData icon;
+
+  const _SubjectButton({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+    required this.icon,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: selected ? AppColors.primaryBlue.withValues(alpha: 0.12) : Colors.white,
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: selected ? AppColors.primaryBlue : Colors.grey.shade300,
+              width: selected ? 1.6 : 1.1,
+            ),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                icon,
+                size: 18,
+                color: selected ? AppColors.primaryBlue : AppColors.bodyText,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                label,
+                style: (selected ? AppTypography.cardTitle(fontSize: 14) : AppTypography.body(fontSize: 14))
+                    .copyWith(color: selected ? AppColors.primaryBlue : AppColors.bodyText),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

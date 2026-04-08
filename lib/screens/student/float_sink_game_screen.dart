@@ -17,6 +17,18 @@ class _FloatSinkGameScreenState extends State<FloatSinkGameScreen> with TickerPr
     GameObject(id: 'sponge', name: 'Sponge', assetPath: 'images/sponge.png', sinks: false),
     GameObject(id: 'paper', name: 'Paper', assetPath: 'images/paper.png', sinks: false),
     GameObject(id: 'leaf', name: 'Leaf', assetPath: 'images/leaf.png', sinks: false),
+    // Extra items: emoji visuals (no new image assets required)
+    GameObject(id: 'star', name: 'Star', sinks: false),
+    GameObject(id: 'feather', name: 'Feather', sinks: false),
+    GameObject(id: 'coin', name: 'Coin', sinks: true),
+    GameObject(id: 'apple', name: 'Apple', sinks: false),
+    GameObject(id: 'duck', name: 'Duck', sinks: false),
+    GameObject(id: 'key', name: 'Key', sinks: true),
+    GameObject(id: 'balloon', name: 'Balloon', sinks: false),
+    GameObject(id: 'brick', name: 'Brick', sinks: true),
+    GameObject(id: 'paperclip', name: 'Paperclip', sinks: true),
+    GameObject(id: 'orange', name: 'Orange', sinks: false),
+    GameObject(id: 'lifebuoy', name: 'Lifebuoy', sinks: false),
   ];
 
   final Map<String, Offset> _objectPositions = {};
@@ -32,6 +44,7 @@ class _FloatSinkGameScreenState extends State<FloatSinkGameScreen> with TickerPr
   final Map<String, AnimationController> _floatControllers = {};
   final Map<String, AnimationController> _sinkControllers = {};
   final Map<String, AnimationController> _scaleControllers = {};
+  final Map<String, AnimationController> _dropControllers = {};
   String? _lastDroppedObject;
   
   // Track drag position for showing options
@@ -39,7 +52,6 @@ class _FloatSinkGameScreenState extends State<FloatSinkGameScreen> with TickerPr
   bool _showFloatSinkOptions = false;
   bool? _pendingFloatChoice; // Stores user's choice before drop
   String? _pendingObjectId; // Object ID for pending choice
-  bool _objectFrozenAtTop = false; // Track if object is in collider box
   bool _lastColliderState = false; // Cache to prevent unnecessary setState
   String? _frozenObjectId; // ID of object frozen in collider box
   
@@ -74,6 +86,11 @@ class _FloatSinkGameScreenState extends State<FloatSinkGameScreen> with TickerPr
         duration: const Duration(milliseconds: 500), // Quick scale-in with bounce
         vsync: this,
       );
+
+      _dropControllers[obj.id] = AnimationController(
+        duration: const Duration(milliseconds: 520), // Snappy drop into water
+        vsync: this,
+      );
     }
     
     _splashController = AnimationController(
@@ -103,16 +120,32 @@ class _FloatSinkGameScreenState extends State<FloatSinkGameScreen> with TickerPr
     for (var controller in _scaleControllers.values) {
       controller.dispose();
     }
+    for (var controller in _dropControllers.values) {
+      controller.dispose();
+    }
     super.dispose();
   }
 
-  void _onObjectDropped(String objectId, Offset position, bool isInWater, {bool? floatChoice}) {
+  void _onObjectDropped(
+    String objectId,
+    Offset position,
+    bool isInWater, {
+    bool? floatChoice,
+  }) {
+    // Stop any running animations for this object before replaying
+    _floatControllers[objectId]?.stop();
+    _sinkControllers[objectId]?.stop();
+    _scaleControllers[objectId]?.stop();
+    _dropControllers[objectId]?.stop();
+
     setState(() {
       _objectPositions[objectId] = position;
       _objectPlaced[objectId] = true;
       _lastDroppedObject = objectId;
       _showFloatSinkOptions = false;
       _draggingObjectId = null;
+      _frozenObjectId = null;
+      _lastColliderState = false;
       
       // Use pending choice if available, otherwise use provided choice, otherwise default
       bool finalChoice;
@@ -133,33 +166,30 @@ class _FloatSinkGameScreenState extends State<FloatSinkGameScreen> with TickerPr
       final isCorrect = (userChoice && !object.sinks) || (!userChoice && object.sinks);
       _objectCorrect[objectId] = isCorrect;
       
-      // Start appropriate animation with smooth scale-in
-      _scaleControllers[objectId]?.forward(from: 0).then((_) {
-        // Stop scale animation after completion to reduce overhead
-        _scaleControllers[objectId]?.stop();
+      // Scale-in + drop first, then float or sink.
+      _scaleControllers[objectId]?.forward(from: 0).then((_) => _scaleControllers[objectId]?.stop());
+      _dropControllers[objectId]?.forward(from: 0).then((_) {
+        _dropControllers[objectId]?.stop();
+        if (!mounted) return;
+        // Physics: floaters bob, sinkers sink (only reached after a correct prediction from buttons).
+        final physicallyFloats = !object.sinks;
+        if (physicallyFloats) {
+          _floatControllers[objectId]?.repeat(reverse: true);
+        } else {
+          _sinkControllers[objectId]?.forward(from: 0).then((_) => _sinkControllers[objectId]?.stop());
+        }
       });
       
-      if (userChoice) {
-        // Float animation - start continuous bobbing with smooth easing
-        _floatControllers[objectId]?.repeat(reverse: true);
-      } else {
-        // Sink animation - animate to bottom with smooth curve
-        _sinkControllers[objectId]?.forward(from: 0).then((_) {
-          // Stop sink animation after completion
-          _sinkControllers[objectId]?.stop();
-        });
-      }
-      
       if (isCorrect) {
-        _score += 20; // More points for correct prediction
+        _score += 20;
         _successController.forward(from: 0);
-      } else {
-        _score += 5; // Fewer points for incorrect
       }
       
       _totalPlaced++;
       
-      if (_totalPlaced == _objects.length) {
+      // Avoid ending the game while answer feedback is being shown.
+      // The option-selection flow handles completion after feedback.
+      if (_totalPlaced == _objects.length && !_showingFeedback) {
         Future.delayed(const Duration(milliseconds: 2000), () {
           if (mounted) {
             setState(() {
@@ -181,7 +211,6 @@ class _FloatSinkGameScreenState extends State<FloatSinkGameScreen> with TickerPr
     // Only clear if no object is frozen (normal drag end)
     setState(() {
       _showFloatSinkOptions = false;
-      _objectFrozenAtTop = false;
       _draggingObjectId = null;
       _lastColliderState = false;
       // Clear pending choice if drag ends without drop
@@ -195,51 +224,56 @@ class _FloatSinkGameScreenState extends State<FloatSinkGameScreen> with TickerPr
   void _onOptionSelected(String objectId, bool floatChoice) {
     final object = _objects.firstWhere((o) => o.id == objectId);
     final isCorrect = (floatChoice && !object.sinks) || (!floatChoice && object.sinks);
-    
-    setState(() {
-      _showingFeedback = true;
-      _lastAnswerCorrect = isCorrect;
-      _feedbackMessage = isCorrect ? 'Correct!' : 'Wrong!';
-      _showFloatSinkOptions = false;
-      
-      // Record the answer
-      _objectFloatChoice[objectId] = floatChoice;
-      _objectCorrect[objectId] = isCorrect;
-      _objectPlaced[objectId] = true;
-      
-      if (isCorrect) {
-        _score += 20;
-        _successController.forward(from: 0);
-      } else {
-        _score += 5;
-      }
-      
-      _totalPlaced++;
-    });
-    
-    // Show feedback for 2 seconds, then move to next object
-    Future.delayed(const Duration(seconds: 2), () {
-      if (mounted) {
+
+    if (!isCorrect) {
+      setState(() {
+        _showingFeedback = true;
+        _lastAnswerCorrect = false;
+        _feedbackMessage = 'Try again';
+        _showFloatSinkOptions = false;
+      });
+      Future.delayed(const Duration(milliseconds: 1500), () {
+        if (!mounted) return;
         setState(() {
           _showingFeedback = false;
           _feedbackMessage = null;
           _lastAnswerCorrect = null;
+          _showFloatSinkOptions = true;
+          _frozenObjectId = objectId;
+          _draggingObjectId = objectId;
         });
-        
-        // Move to next object or complete game
-        if (_currentObjectIndex < _objects.length - 1) {
-          _currentObjectIndex++;
-          _showNextObject();
-        } else {
-          // All objects completed
-          Future.delayed(const Duration(milliseconds: 500), () {
-            if (mounted) {
-              setState(() {
-                _gameCompleted = true;
-              });
-            }
-          });
-        }
+      });
+      return;
+    }
+
+    setState(() {
+      _showingFeedback = true;
+      _lastAnswerCorrect = true;
+      _feedbackMessage = 'Correct!';
+      _showFloatSinkOptions = false;
+    });
+
+    _onObjectDropped(objectId, const Offset(0, 0), true, floatChoice: floatChoice);
+
+    Future.delayed(const Duration(seconds: 2), () {
+      if (!mounted) return;
+      setState(() {
+        _showingFeedback = false;
+        _feedbackMessage = null;
+        _lastAnswerCorrect = null;
+      });
+
+      if (_currentObjectIndex < _objects.length - 1) {
+        _currentObjectIndex++;
+        _showNextObject();
+      } else {
+        Future.delayed(const Duration(milliseconds: 500), () {
+          if (mounted) {
+            setState(() {
+              _gameCompleted = true;
+            });
+          }
+        });
       }
     });
   }
@@ -265,6 +299,7 @@ class _FloatSinkGameScreenState extends State<FloatSinkGameScreen> with TickerPr
         _floatControllers[obj.id]?.reset();
         _sinkControllers[obj.id]?.reset();
         _scaleControllers[obj.id]?.reset();
+        _dropControllers[obj.id]?.reset();
       }
       _score = 0;
       _totalPlaced = 0;
@@ -274,7 +309,6 @@ class _FloatSinkGameScreenState extends State<FloatSinkGameScreen> with TickerPr
       _draggingObjectId = null;
       _pendingFloatChoice = null;
       _pendingObjectId = null;
-      _objectFrozenAtTop = false;
       _lastColliderState = false;
       _frozenObjectId = null;
       _currentObjectIndex = 0;
@@ -324,33 +358,40 @@ class _FloatSinkGameScreenState extends State<FloatSinkGameScreen> with TickerPr
           children: [
             _buildInstructions(),
             Expanded(
-              child: SingleChildScrollView(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    const SizedBox(height: 20),
-                    // Container centered
-                    Center(
-                      child: _buildWaterGlass(),
-                    ),
-                    // Show Float/Sink buttons below container when object is frozen or in collider
-                    if (_showFloatSinkOptions && !_showingFeedback && (_frozenObjectId != null || _draggingObjectId != null))
-                      Padding(
-                        padding: const EdgeInsets.only(top: 20),
-                        child: _buildFloatSinkOptions(_frozenObjectId ?? _draggingObjectId!),
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  return Column(
+                    children: [
+                      Expanded(
+                        child: Center(
+                          child: FittedBox(
+                            fit: BoxFit.contain,
+                            child: SizedBox(
+                              width: 360,
+                              height: 610,
+                              child: _buildWaterGlass(),
+                            ),
+                          ),
+                        ),
                       ),
-                    // Show feedback board when showing feedback
-                    if (_showingFeedback && _feedbackMessage != null)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 20),
-                        child: _buildFeedbackBoard(),
-                      ),
-                    const SizedBox(height: 20),
-                    // Object options below container (hidden since we show objects automatically)
-                    // _buildObjectList(),
-                    const SizedBox(height: 16),
-                  ],
-                ),
+                      // Show Float/Sink buttons below container when object is frozen or in collider
+                      if (_showFloatSinkOptions &&
+                          !_showingFeedback &&
+                          (_frozenObjectId != null || _draggingObjectId != null))
+                        Padding(
+                          padding: const EdgeInsets.only(top: 8),
+                          child: _buildFloatSinkOptions(_frozenObjectId ?? _draggingObjectId!),
+                        ),
+                      // Show feedback board when showing feedback
+                      if (_showingFeedback && _feedbackMessage != null)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 8),
+                          child: _buildFeedbackBoard(),
+                        ),
+                      const SizedBox(height: 8),
+                    ],
+                  );
+                },
               ),
             ),
             _buildFeedback(),
@@ -385,6 +426,11 @@ class _FloatSinkGameScreenState extends State<FloatSinkGameScreen> with TickerPr
   }
 
   Widget _buildWaterGlass() {
+    final promptObjectId = _frozenObjectId ?? _draggingObjectId;
+    final promptObjectName = promptObjectId != null
+        ? _objects.firstWhere((o) => o.id == promptObjectId).name
+        : 'this object';
+
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
       child: Stack(
@@ -394,38 +440,29 @@ class _FloatSinkGameScreenState extends State<FloatSinkGameScreen> with TickerPr
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                // Collider box at top of container
+                // Hidden collider UI area: keep functionality, show prompt + object preview.
                 Container(
                   width: 320,
-                  height: 60,
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(2), // Match rectangular container
-                    border: Border.all(
-                      color: (_showFloatSinkOptions && (_draggingObjectId != null || _frozenObjectId != null))
-                          ? AppColors.freshGreen
-                          : Colors.grey.shade300,
-                      width: 3,
-                    ),
-                    color: (_showFloatSinkOptions && (_draggingObjectId != null || _frozenObjectId != null))
-                        ? AppColors.freshGreen.withValues(alpha: 0.1)
-                        : Colors.transparent,
-                  ),
-                  child: Stack(
-                    children: [
-                      // Show object in collider when frozen or dragged there
-                      if (_frozenObjectId != null || (_objectFrozenAtTop && _draggingObjectId != null))
-                        Center(
-                          child: _buildObjectInCollider(),
-                        )
-                      else
-                        Center(
-                          child: Icon(
-                            Icons.add_circle_outline_rounded,
-                            color: Colors.grey.shade400,
-                            size: 30,
+                  height: 90,
+                  color: Colors.transparent,
+                  child: Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Text(
+                          'Will $promptObjectName float or sink?',
+                          style: AppTypography.cardTitle(
+                            fontSize: 16,
+                            color: AppColors.primaryBlue,
                           ),
+                          textAlign: TextAlign.center,
                         ),
-                    ],
+                        if (promptObjectId != null) ...[
+                          const SizedBox(height: 6),
+                          _buildObjectIcon(promptObjectId, size: 34),
+                        ],
+                      ],
+                    ),
                   ),
                 ),
                 // Main container - 3D transparent rectangular container
@@ -451,7 +488,15 @@ class _FloatSinkGameScreenState extends State<FloatSinkGameScreen> with TickerPr
                         child: Container(
                           // Transparent overlay to hold dropped objects
                           color: Colors.transparent,
-                          child: _buildDroppedObjects(),
+                          // Inset + clip so objects stay inside the glass interior.
+                          child: ClipRect(
+                            child: Padding(
+                              // Tuned to keep objects inside the container.png glass walls/rim.
+                              // Increase bottom inset to avoid the image's transparent "base" area.
+                              padding: const EdgeInsets.fromLTRB(50, 44, 50, 92),
+                              child: _buildDroppedObjects(),
+                            ),
+                          ),
                         ),
                       ),
                     ],
@@ -465,7 +510,7 @@ class _FloatSinkGameScreenState extends State<FloatSinkGameScreen> with TickerPr
             top: 20,
             left: 20,
             right: 20,
-            height: 60,
+            height: 90,
             // Width matches the collider box (320px)
             child: DragTarget<GameObject>(
               onWillAccept: (object) {
@@ -482,15 +527,14 @@ class _FloatSinkGameScreenState extends State<FloatSinkGameScreen> with TickerPr
                   _frozenObjectId = object.id; // Store frozen object ID
                   _draggingObjectId = object.id;
                   _showFloatSinkOptions = true;
-                  _objectFrozenAtTop = true;
                   _lastColliderState = true;
                 });
               },
               onMove: (details) {
                 final renderBox = context.findRenderObject() as RenderBox;
                 final localPosition = renderBox.globalToLocal(details.offset);
-                // Check if in collider area (top 60px of the container area)
-                final isInCollider = localPosition.dy >= 20 && localPosition.dy <= 80;
+                // Check if in collider area (top 90px of the container area)
+                final isInCollider = localPosition.dy >= 20 && localPosition.dy <= 110;
                 
                 // Only update state if it changed and no object is frozen (prevents excessive rebuilds)
                 if (isInCollider != _lastColliderState && _frozenObjectId == null) {
@@ -499,7 +543,6 @@ class _FloatSinkGameScreenState extends State<FloatSinkGameScreen> with TickerPr
                     setState(() {
                       _draggingObjectId = details.data.id;
                       _showFloatSinkOptions = isInCollider;
-                      _objectFrozenAtTop = isInCollider;
                     });
                   }
                 }
@@ -511,7 +554,6 @@ class _FloatSinkGameScreenState extends State<FloatSinkGameScreen> with TickerPr
                   if (mounted) {
                     setState(() {
                       _showFloatSinkOptions = false;
-                      _objectFrozenAtTop = false;
                     });
                   }
                 }
@@ -533,7 +575,7 @@ class _FloatSinkGameScreenState extends State<FloatSinkGameScreen> with TickerPr
           ),
           // Drop target overlay for main container (for objects already placed)
           Positioned(
-            top: 80, // Below collider
+            top: 110, // Below collider
             left: 20,
             right: 20,
             bottom: 20,
@@ -589,68 +631,101 @@ class _FloatSinkGameScreenState extends State<FloatSinkGameScreen> with TickerPr
   Widget _buildDroppedObjects() {
     final placedObjects = _objects.where((obj) => _objectPlaced[obj.id] == true).toList();
     
-    return RepaintBoundary(
-      child: Stack(
-        children: placedObjects.asMap().entries.map((entry) {
-        final index = entry.key;
-        final object = entry.value;
-        final isCorrect = _objectCorrect[object.id]!;
-        final floatChoice = _objectFloatChoice[object.id] ?? false;
-        
-        // Position objects: floating at top, sinking at bottom
-        // Water area is 320px wide, 400px tall
-        // Distribute horizontally for multiple objects
-        final objectWidth = 75.0;
-        final containerWidth = 320.0;
-        final horizontalCenter = (containerWidth - objectWidth) / 2; // Center position: (320 - 75) / 2 = 122.5px
-        final horizontalOffset = (placedObjects.length > 1) 
-            ? (index - (placedObjects.length - 1) / 2) * 80.0 // Spacing for multiple objects
-            : 0.0;
-        
-        // Base vertical position based on user's choice
-        // Water area is 400px tall (positioned at bottom of 480px container)
-        // Floating objects should be at the water surface (top of water area = 0)
-        // Sinking objects: water area is 400px, object is 75px, so bottom position = 400 - 75 = 325px
-        final baseVerticalPosition = floatChoice ? 0.0 : 5.0; // Float at surface (0), sink starts at 5px
-        
-        return Positioned(
-          left: horizontalCenter + horizontalOffset, // Center horizontally, add offset for multiple objects
-          top: baseVerticalPosition,
-          child: _buildAnimatedObject(object, isCorrect, floatChoice, index),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        const objectSize = 75.0;
+        final maxW = constraints.maxWidth;
+        final maxH = constraints.maxHeight;
+
+        // Tighten spacing when many objects so they stay inside the glass.
+        final n = placedObjects.length;
+        final spacing = n <= 1
+            ? 0.0
+            : math.min(64.0, math.max(22.0, (maxW - objectSize - 6) / (n - 1)));
+
+        double clampDouble(double v, double min, double max) {
+          if (max < min) return min;
+          if (v < min) return min;
+          if (v > max) return max;
+          return v;
+        }
+
+        return RepaintBoundary(
+          child: Stack(
+            clipBehavior: Clip.hardEdge,
+            children: placedObjects.asMap().entries.map((entry) {
+              final index = entry.key;
+              final object = entry.value;
+              final isCorrect = _objectCorrect[object.id]!;
+              // Visual motion follows physics, not the child's wrong button choice.
+              final physicallyFloats = !object.sinks;
+
+              // Horizontal layout: center then distribute, but always clamp into interior bounds.
+              final horizontalCenter = (maxW - objectSize) / 2;
+              final horizontalOffset = (placedObjects.length > 1)
+                  ? (index - (placedObjects.length - 1) / 2) * spacing
+                  : 0.0;
+              final left = clampDouble(horizontalCenter + horizontalOffset, 0.0, maxW - objectSize);
+
+              // Vertical base: keep a small top margin so floating bob doesn't cross the rim.
+              final top = physicallyFloats ? 2.0 : 5.0;
+
+              return Positioned(
+                left: left,
+                top: top,
+                child: _buildAnimatedObject(
+                  object,
+                  isCorrect,
+                  physicallyFloats,
+                  index,
+                  waterHeight: maxH,
+                  objectSize: objectSize,
+                ),
+              );
+            }).toList(),
+          ),
         );
-        }).toList(),
-      ),
+      },
     );
   }
   
-  Widget _buildAnimatedObject(GameObject object, bool isCorrect, bool floatChoice, int index) {
+  Widget _buildAnimatedObject(
+    GameObject object,
+    bool isCorrect,
+    bool animateAsFloat,
+    int index, {
+    required double waterHeight,
+    required double objectSize,
+  }) {
+    // Drop from just above the water surface into it.
+    const dropDistance = 62.0;
+
     // Float animation - realistic bobbing motion with Flame-optimized curves
-    if (floatChoice) {
-      // Only listen to scale animation if it's still animating
-      final scaleAnimating = _scaleControllers[object.id]!.isAnimating;
+    if (animateAsFloat) {
       return RepaintBoundary(
         child: AnimatedBuilder(
-          animation: scaleAnimating
-              ? Listenable.merge([_floatControllers[object.id]!, _scaleControllers[object.id]!])
-              : _floatControllers[object.id]!,
+          animation: Listenable.merge([
+            _floatControllers[object.id]!,
+            _scaleControllers[object.id]!,
+            _dropControllers[object.id]!,
+          ]),
           builder: (context, child) {
             final floatValue = _floatControllers[object.id]!.value;
-            final scaleValue = scaleAnimating 
-                ? _scaleControllers[object.id]!.value 
-                : 1.0;
+            final scaleValue = _scaleControllers[object.id]!.value;
+            final dropValue = _dropControllers[object.id]!.value;
+            final dropEase = Curves.easeIn.transform(dropValue);
+            final dropYOffset = (-dropDistance) * (1.0 - dropEase);
             
             // Create smooth, subtle bobbing motion - floating on water surface
             // Use simple sine wave for natural water movement
             // Objects should float at the water surface (position 0) with gentle bobbing
             // Base position is 0 (water surface), add small bobbing motion (±1.5px)
-            final verticalOffset = 0.0 + (math.sin(floatValue * 2 * math.pi) * 1.5); // 0px base + ±1.5px bobbing (on water surface)
+            final verticalOffset = dropYOffset + (math.sin(floatValue * 2 * math.pi) * 1.5);
             final horizontalOffset = (math.cos(floatValue * 2 * math.pi) * 1.5); // ±1.5 pixels - minimal drift
             final rotation = (math.sin(floatValue * 2 * math.pi) * 0.03); // Very gentle rotation
             
-            // Smooth scale-in animation with bounce effect (only if animating)
-            final scale = _scaleControllers[object.id]!.isAnimating
-                ? 0.2 + (_elasticEaseOut(scaleValue) * 0.8)
-                : 1.0;
+            // Use controller value directly so animation is seamless across frame boundaries.
+            final scale = 0.2 + (_elasticEaseOut(scaleValue) * 0.8);
           
           return Transform.translate(
             offset: Offset(horizontalOffset, verticalOffset),
@@ -668,38 +743,32 @@ class _FloatSinkGameScreenState extends State<FloatSinkGameScreen> with TickerPr
       );
     } else {
       // Sink animation - smooth sinking to bottom with optimized curves
-      final sinkAnimating = _sinkControllers[object.id]!.isAnimating;
-      final scaleAnimating = _scaleControllers[object.id]!.isAnimating;
-      final needsAnimation = sinkAnimating || scaleAnimating;
-      
       return RepaintBoundary(
-        child: needsAnimation
-            ? AnimatedBuilder(
+        child: AnimatedBuilder(
                 animation: Listenable.merge([
-                  if (sinkAnimating) _sinkControllers[object.id]!,
-                  if (scaleAnimating) _scaleControllers[object.id]!,
+                  _sinkControllers[object.id]!,
+                  _scaleControllers[object.id]!,
+                  _dropControllers[object.id]!,
                 ]),
                 builder: (context, child) {
-                  final sinkValue = sinkAnimating 
-                      ? _sinkControllers[object.id]!.value 
-                      : 1.0;
-                  final scaleValue = scaleAnimating 
-                      ? _scaleControllers[object.id]!.value 
-                      : 1.0;
+                  final sinkAnimating = _sinkControllers[object.id]!.isAnimating;
+                  final sinkValue = _sinkControllers[object.id]!.value;
+                  final scaleValue = _scaleControllers[object.id]!.value;
+                  final dropValue = _dropControllers[object.id]!.value;
+                  final dropEase = Curves.easeIn.transform(dropValue);
+                  final dropYOffset = (-dropDistance) * (1.0 - dropEase);
             
                   // Smooth sinking motion with cubic easing for acceleration
-                  // Water area is 400px tall, object height is 75px
-                  // To keep object fully within water: use 200px to ensure it stays well within bounds
-                  // Object bottom will be at 200+75=275px, leaving 125px margin from bottom (400px)
+                  // Keep the object fully inside the available clipped water area.
                   final easedSink = _cubicEaseIn(sinkValue);
-                  final verticalOffset = 5.0 + (easedSink * 195.0); // Start at 5px, sink to 200px (well within water area)
+                  const startY = 5.0;
+                  final maxSink = math.max(0.0, (waterHeight - objectSize) - startY);
+                  final verticalOffset = dropYOffset + startY + (easedSink * maxSink);
                   final opacity = 1.0 - (easedSink * 0.1); // Minimal fade as it sinks
                   final sinkScale = 1.0 - (easedSink * 0.05); // Very slight shrink as it sinks
                   
-                  // Smooth scale-in animation with bounce (only if animating)
-                  final initialScale = scaleAnimating
-                      ? 0.2 + (_elasticEaseOut(scaleValue) * 0.8)
-                      : 1.0;
+                  // Use controller value directly so drop->sink transition cannot miss frames.
+                  final initialScale = 0.2 + (_elasticEaseOut(scaleValue) * 0.8);
                   final finalScale = initialScale * sinkScale;
                 
                   return Transform.translate(
@@ -708,47 +777,30 @@ class _FloatSinkGameScreenState extends State<FloatSinkGameScreen> with TickerPr
                       opacity: opacity,
                       child: Transform.scale(
                         scale: finalScale,
-                        // Add blue underwater tint - stronger as object sinks deeper (matrix filter tints only image, no background)
-                        child: ColorFiltered(
-                          colorFilter: ColorFilter.matrix([
-                            1.0, 0.0, 0.0, 0.0, 0.0, // Red channel
-                            0.0, 0.8 + (easedSink * 0.1), 0.0, 0.0, 0.0, // Green channel (reduced for blue tint)
-                            0.0, 0.0, 1.0 + (easedSink * 0.2), 0.0, 0.0, // Blue channel (enhanced)
-                            0.0, 0.0, 0.0, 1.0, 0.0, // Alpha channel (unchanged - no background)
-                          ]),
-                          child: _buildObjectIcon(object.id, size: 75),
+                        child: Stack(
+                          clipBehavior: Clip.none,
+                          alignment: Alignment.center,
+                          children: [
+                            // Add blue underwater tint - stronger as object sinks deeper (matrix filter tints only image, no background)
+                            ColorFiltered(
+                              colorFilter: ColorFilter.matrix([
+                                1.0, 0.0, 0.0, 0.0, 0.0, // Red channel
+                                0.0, 0.8 + (easedSink * 0.1), 0.0, 0.0, 0.0, // Green channel (reduced for blue tint)
+                                0.0, 0.0, 1.0 + (easedSink * 0.2), 0.0, 0.0, // Blue channel (enhanced)
+                                0.0, 0.0, 0.0, 1.0, 0.0, // Alpha channel (unchanged - no background)
+                              ]),
+                              child: _buildObjectIcon(object.id, size: 75),
+                            ),
+                            if (sinkAnimating && sinkValue > 0.03) _buildSinkBubbles(sinkValue),
+                          ],
                         ),
                       ),
                     ),
                   );
                 },
-              )
-            : _buildStaticSunkObject(object, isCorrect),
+              ),
       );
     }
-  }
-  
-  // Static widget for objects that have finished sinking (no animation overhead)
-  Widget _buildStaticSunkObject(GameObject object, bool isCorrect) {
-    return Transform.translate(
-      offset: const Offset(0, 200.0), // At bottom of water area with safe margin (object bottom at 275px, well within 400px)
-      child: Opacity(
-        opacity: 0.9,
-        child: Transform.scale(
-          scale: 0.95,
-          // Add blue underwater tint for fully sunk objects (matrix filter tints only image, no background)
-          child: ColorFiltered(
-            colorFilter: ColorFilter.matrix([
-              1.0, 0.0, 0.0, 0.0, 0.0, // Red channel
-              0.0, 0.7, 0.0, 0.0, 0.0, // Green channel (reduced for blue tint)
-              0.0, 0.0, 1.2, 0.0, 0.0, // Blue channel (enhanced)
-              0.0, 0.0, 0.0, 1.0, 0.0, // Alpha channel (unchanged - no background)
-            ]),
-            child: _buildObjectIcon(object.id, size: 75),
-          ),
-        ),
-      ),
-    );
   }
   
   // Smooth easing functions inspired by Flame's animation curves
@@ -764,42 +816,59 @@ class _FloatSinkGameScreenState extends State<FloatSinkGameScreen> with TickerPr
     final s = p / 4;
     return math.pow(2, -10 * t) * math.sin((t - s) * (2 * math.pi) / p) + 1;
   }
-  
-  Widget _buildObjectInCollider() {
-    // Show object if it's frozen in collider or currently being dragged over it
-    final objectIdToShow = _frozenObjectId ?? _draggingObjectId;
-    if (objectIdToShow == null) {
-      return const SizedBox.shrink();
-    }
-    
-    final object = _objects.firstWhere((o) => o.id == objectIdToShow);
-    
-    return Container(
-      width: 60,
-      height: 60,
-      decoration: BoxDecoration(
-        color: Colors.transparent, // No white background
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(
-          color: AppColors.freshGreen,
-          width: 2.5,
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.2),
-            blurRadius: 6,
-            offset: const Offset(0, 2),
+
+  Widget _buildSinkBubbles(double sinkValue) {
+    final v = sinkValue.clamp(0.0, 1.0);
+    final bubbleOpacity = (v * 1.15).clamp(0.0, 0.85);
+    final rise = 26.0 * v;
+
+    return IgnorePointer(
+      child: Opacity(
+        opacity: bubbleOpacity,
+        child: SizedBox(
+          width: 75,
+          height: 75,
+          child: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              _buildBubble(size: 7, left: 8, top: 16 - rise),
+              _buildBubble(size: 5, left: 22, top: 6 - (rise * 0.7)),
+              _buildBubble(size: 6, left: 48, top: 12 - (rise * 0.9)),
+              _buildBubble(size: 4, left: 60, top: 20 - (rise * 0.6)),
+            ],
           ),
-        ],
+        ),
       ),
-      child: _buildObjectIcon(object.id, size: 30),
+    );
+  }
+
+  Widget _buildBubble({
+    required double size,
+    required double left,
+    required double top,
+  }) {
+    return Positioned(
+      left: left,
+      top: top,
+      child: Container(
+        width: size,
+        height: size,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: Colors.white.withValues(alpha: 0.75),
+          border: Border.all(
+            color: Colors.white.withValues(alpha: 0.9),
+            width: 0.8,
+          ),
+        ),
+      ),
     );
   }
   
   Widget _buildFloatSinkOptions(String objectId) {
     return Center(
       child: Container(
-        constraints: const BoxConstraints(maxWidth: 200),
+        constraints: const BoxConstraints(maxWidth: 240),
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
         decoration: BoxDecoration(
           color: Colors.white,
@@ -865,12 +934,9 @@ class _FloatSinkGameScreenState extends State<FloatSinkGameScreen> with TickerPr
           children: [
             Icon(icon, color: color, size: 18),
             const SizedBox(width: 6),
-            Flexible(
-              child: Text(
-                label,
-                style: AppTypography.cardTitle(fontSize: 14, color: color),
-                overflow: TextOverflow.ellipsis,
-              ),
+            Text(
+              label,
+              style: AppTypography.cardTitle(fontSize: 14, color: color),
             ),
           ],
         ),
@@ -880,15 +946,19 @@ class _FloatSinkGameScreenState extends State<FloatSinkGameScreen> with TickerPr
   
   Widget _buildFeedbackBoard() {
     final isCorrect = _lastAnswerCorrect ?? false;
+    final isRetry = !isCorrect && _feedbackMessage == 'Try again';
+    final accent = isCorrect
+        ? AppColors.freshGreen
+        : (isRetry ? const Color(0xFFFF9800) : Colors.red);
     return Center(
       child: Container(
         constraints: const BoxConstraints(maxWidth: 300),
         padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
         decoration: BoxDecoration(
-          color: isCorrect ? AppColors.freshGreen.withValues(alpha: 0.1) : Colors.red.withValues(alpha: 0.1),
+          color: Colors.white,
           borderRadius: BorderRadius.circular(20),
           border: Border.all(
-            color: isCorrect ? AppColors.freshGreen : Colors.red,
+            color: accent,
             width: 3,
           ),
           boxShadow: [
@@ -903,8 +973,10 @@ class _FloatSinkGameScreenState extends State<FloatSinkGameScreen> with TickerPr
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(
-              isCorrect ? Icons.check_circle_rounded : Icons.cancel_rounded,
-              color: isCorrect ? AppColors.freshGreen : Colors.red,
+              isCorrect
+                  ? Icons.check_circle_rounded
+                  : (isRetry ? Icons.touch_app_rounded : Icons.cancel_rounded),
+              color: accent,
               size: 60,
             ),
             const SizedBox(height: 12),
@@ -912,148 +984,12 @@ class _FloatSinkGameScreenState extends State<FloatSinkGameScreen> with TickerPr
               _feedbackMessage ?? '',
               style: AppTypography.cardTitle(
                 fontSize: 24,
-                color: isCorrect ? AppColors.freshGreen : Colors.red,
+                color: accent,
               ),
+              textAlign: TextAlign.center,
             ),
           ],
         ),
-      ),
-    );
-  }
-
-  Widget _buildObjectList() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.center,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(
-            'Objects',
-            style: AppTypography.cardTitle(fontSize: 18),
-          ),
-          const SizedBox(height: 12),
-          // Grid so all 5 objects (ball, rock, sponge, paper, leaf) are visible
-          // Use shrinkWrap to size based on content, not fixed height
-          GridView.builder(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(), // Disable grid scroll, let parent scroll
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 2,
-              mainAxisSpacing: 6,
-              crossAxisSpacing: 6,
-              // Higher ratio = shorter cells (0.85 = cells are wider/shorter)
-              childAspectRatio: 0.85,
-            ),
-            itemCount: _objects.length,
-              itemBuilder: (context, index) {
-                final object = _objects[index];
-                final isPlaced = _objectPlaced[object.id] == true;
-                final isFrozen = _frozenObjectId == object.id;
-
-                return Draggable<GameObject>(
-                    data: object,
-                    feedback: isFrozen 
-                        ? const SizedBox.shrink() 
-                        : Material(
-                            color: Colors.transparent,
-                            child: Container(
-                              width: 95,
-                              height: 95,
-                              decoration: BoxDecoration(
-                                color: Colors.transparent, // No white background
-                                borderRadius: BorderRadius.circular(12),
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: Colors.black.withValues(alpha: 0.2),
-                                    blurRadius: 6,
-                                    offset: const Offset(0, 2),
-                                  ),
-                                ],
-                              ),
-                              child: _buildObjectIcon(object.id, size: 45),
-                            ),
-                          ),
-                    onDragStarted: () {
-                      // Don't allow dragging if frozen
-                      if (!isFrozen) {
-                        setState(() {
-                          _draggingObjectId = object.id;
-                        });
-                      }
-                    },
-                    onDragEnd: (details) {
-                      // Don't call _onDragEnd if object is frozen - it should stay frozen
-                      // Only call if object was being dragged but not frozen
-                      if (!isFrozen && _frozenObjectId == null) {
-                        _onDragEnd();
-                      }
-                    },
-                    childWhenDragging: isFrozen 
-                        ? _buildObjectCard(object, isPlaced, isFrozen: true)
-                        : Opacity(
-                            opacity: 0.3,
-                            child: _buildObjectCard(object, isPlaced),
-                          ),
-                    child: _buildObjectCard(object, isPlaced, isFrozen: isFrozen),
-                  );
-              },
-            ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildObjectCard(GameObject object, bool isPlaced, {bool isFrozen = false}) {
-    return Container(
-      padding: const EdgeInsets.all(6), // Further reduced to fit better
-      decoration: BoxDecoration(
-        color: isFrozen 
-            ? AppColors.primaryBlue.withValues(alpha: 0.1)
-            : (isPlaced ? Colors.grey.shade200 : AppColors.backgroundCard),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(
-          color: isFrozen 
-              ? AppColors.primaryBlue
-              : (isPlaced ? Colors.grey.shade300 : Colors.grey.shade200),
-          width: isFrozen ? 2 : 1,
-        ),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Container(
-            width: 45, // Slightly smaller
-            height: 45, // Slightly smaller
-            decoration: BoxDecoration(
-              color: Colors.transparent, // No white background
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: Colors.grey.shade300),
-            ),
-            child: _buildObjectIcon(object.id, size: 28), // Slightly smaller icon
-          ),
-          const SizedBox(height: 4), // Reduced spacing
-          Text(
-            object.name,
-            style: AppTypography.body(fontSize: 10), // Smaller font
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-          if (isPlaced)
-            Padding(
-              padding: const EdgeInsets.only(top: 2),
-              child: Icon(
-                _objectCorrect[object.id] == true
-                    ? Icons.check_circle
-                    : Icons.cancel,
-                size: 12, // Smaller icon
-                color: _objectCorrect[object.id] == true
-                    ? AppColors.freshGreen
-                    : Colors.red,
-              ),
-            ),
-        ],
       ),
     );
   }
@@ -1071,9 +1007,7 @@ class _FloatSinkGameScreenState extends State<FloatSinkGameScreen> with TickerPr
           padding: const EdgeInsets.all(16),
           margin: const EdgeInsets.all(16),
           decoration: BoxDecoration(
-            color: isCorrect
-                ? AppColors.freshGreen.withValues(alpha: 0.1)
-                : Colors.red.withValues(alpha: 0.1),
+            color: Colors.white,
             borderRadius: BorderRadius.circular(12),
             border: Border.all(
               color: isCorrect ? AppColors.freshGreen : Colors.red,
@@ -1207,7 +1141,36 @@ class _FloatSinkGameScreenState extends State<FloatSinkGameScreen> with TickerPr
     'leaf': 'images/leaf.png',
   };
 
+  /// Objects shown as emoji (clearly different shapes from ball / photos).
+  static const Map<String, String> _objectEmojis = {
+    'star': '⭐',
+    'feather': '🪶',
+    'coin': '🪙',
+    'apple': '🍎',
+    'duck': '🦆',
+    'key': '🔑',
+    'balloon': '🎈',
+    'brick': '🧱',
+    'paperclip': '📎',
+    'orange': '🍊',
+    'lifebuoy': '🛟',
+  };
+
   Widget _buildObjectIcon(String objectId, {double size = 30}) {
+    final emoji = _objectEmojis[objectId];
+    if (emoji != null && emoji.isNotEmpty) {
+      return SizedBox(
+        width: size,
+        height: size,
+        child: Center(
+          child: Text(
+            emoji,
+            style: TextStyle(fontSize: size * 0.62, height: 1),
+            textAlign: TextAlign.center,
+          ),
+        ),
+      );
+    }
     final path = _objectAssetPaths[objectId];
     if (path != null && path.isNotEmpty) {
       return ClipRRect(

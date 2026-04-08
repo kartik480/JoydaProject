@@ -53,7 +53,7 @@ class GameProgress {
   });
 }
 
-/// Pilot: in-memory state. LKG/UKG = 3 games each, all unlocked. 4th/5th = sequential unlock.
+/// Pilot: in-memory state. LKG/UKG = 5 games each, all unlocked. 4th/5th = sequential unlock.
 class AppState extends ChangeNotifier {
   String? _userEmailOrPhone;
   UserRole? _role;
@@ -101,24 +101,34 @@ class AppState extends ChangeNotifier {
           GameInfo(id: 'lkg1', name: 'Shapes & Colors', difficulty: 'Easy', order: 1),
           GameInfo(id: 'lkg2', name: 'Count the Objects', difficulty: 'Easy', order: 2),
           GameInfo(id: 'lkg3', name: 'Match the Picture', difficulty: 'Easy', order: 3),
+          GameInfo(id: 'lkg4', name: 'Alphabet with Color Pop', difficulty: 'Easy', order: 4),
+          GameInfo(id: 'lkg5', name: 'Sentence Builder', difficulty: 'Easy', order: 5),
         ];
       case Grade.ukg:
         return const [
           GameInfo(id: 'ukg1', name: 'Letter Sounds', difficulty: 'Easy', order: 1),
           GameInfo(id: 'ukg2', name: 'Simple Addition', difficulty: 'Easy', order: 2),
           GameInfo(id: 'ukg3', name: 'What Comes Next?', difficulty: 'Medium', order: 3),
+          GameInfo(id: 'ukg4', name: 'Alphabet with Color Pop', difficulty: 'Easy', order: 4),
+          GameInfo(id: 'ukg5', name: 'Sentence Builder', difficulty: 'Easy', order: 5),
         ];
       case Grade.grade4:
         return const [
-          GameInfo(id: 'g41', name: 'Multiplication Master', difficulty: 'Medium', order: 1),
-          GameInfo(id: 'g42', name: 'Word Builder', difficulty: 'Medium', order: 2),
-          GameInfo(id: 'g43', name: 'Logic Puzzles', difficulty: 'Hard', order: 3),
+          GameInfo(id: 'g41', name: 'Math Battle: Basics', difficulty: 'Easy', order: 1),
+          GameInfo(id: 'g42', name: 'Math Adventure', difficulty: 'Medium', order: 2),
+          GameInfo(id: 'g43', name: 'Math Master Challenge', difficulty: 'Hard', order: 3),
+          GameInfo(id: 'g4sci1', name: 'Plants Around Us', difficulty: 'Easy', order: 4),
+          GameInfo(id: 'g4sci2', name: 'Food Match', difficulty: 'Medium', order: 5),
+          GameInfo(id: 'g4sci3', name: 'States of Matter', difficulty: 'Hard', order: 6),
         ];
       case Grade.grade5:
         return const [
-          GameInfo(id: 'g51', name: 'Fractions Fun', difficulty: 'Medium', order: 1),
-          GameInfo(id: 'g52', name: 'Science Quiz', difficulty: 'Medium', order: 2),
-          GameInfo(id: 'g53', name: 'Critical Thinking', difficulty: 'Hard', order: 3),
+          GameInfo(id: 'g51', name: 'Math Battle: Basics', difficulty: 'Easy', order: 1),
+          GameInfo(id: 'g52', name: 'Math Adventure', difficulty: 'Medium', order: 2),
+          GameInfo(id: 'g53', name: 'Math Master Challenge', difficulty: 'Hard', order: 3),
+          GameInfo(id: 'g5sci1', name: 'Plants Around Us', difficulty: 'Easy', order: 4),
+          GameInfo(id: 'g5sci2', name: 'Food Match', difficulty: 'Medium', order: 5),
+          GameInfo(id: 'g5sci3', name: 'States of Matter', difficulty: 'Hard', order: 6),
         ];
     }
   }
@@ -227,8 +237,8 @@ class AppState extends ChangeNotifier {
       'Count the Objects': 3,
       'Letter Sounds': 4,
       'Simple Addition': 3,
-      'Multiplication Master': 2,
-      'Word Builder': 2,
+      'Math Battle: Basics': 2,
+      'Math Adventure': 2,
     };
     for (final e in mockCompletions.entries) {
       counts[e.key] = (counts[e.key] ?? 0) + e.value;
