@@ -5,11 +5,35 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_tts/flutter_tts.dart';
+import 'package:provider/provider.dart';
 
 import '../../core/app_colors.dart';
 import '../../core/app_typography.dart';
+import '../../core/joyda_tts_config.dart';
+import '../../core/app_state.dart';
+import '../../core/game_scoring.dart';
+import '../../widgets/post_game_praise_gate.dart';
 
-enum _CountableKind { apple, star, ball }
+enum _CountableKind {
+  apple,
+  star,
+  ball,
+  rock,
+  leaf,
+  flower,
+  butterfly,
+  fish,
+  car,
+  bear,
+  moon,
+  cupcake,
+  tree,
+  laptop,
+  duck,
+  sun,
+  grape,
+  orange,
+}
 
 extension on _CountableKind {
   String get instructionNoun {
@@ -20,6 +44,36 @@ extension on _CountableKind {
         return 'stars';
       case _CountableKind.ball:
         return 'balls';
+      case _CountableKind.rock:
+        return 'rocks';
+      case _CountableKind.leaf:
+        return 'leaves';
+      case _CountableKind.flower:
+        return 'flowers';
+      case _CountableKind.butterfly:
+        return 'butterflies';
+      case _CountableKind.fish:
+        return 'fish';
+      case _CountableKind.car:
+        return 'cars';
+      case _CountableKind.bear:
+        return 'teddy bears';
+      case _CountableKind.moon:
+        return 'moons';
+      case _CountableKind.cupcake:
+        return 'cupcakes';
+      case _CountableKind.tree:
+        return 'trees';
+      case _CountableKind.laptop:
+        return 'laptops';
+      case _CountableKind.duck:
+        return 'ducks';
+      case _CountableKind.sun:
+        return 'suns';
+      case _CountableKind.grape:
+        return 'grapes';
+      case _CountableKind.orange:
+        return 'oranges';
     }
   }
 
@@ -44,7 +98,12 @@ class _RoundConfig {
 
 /// LKG/UKG: count objects and pick the correct number.
 class CountObjectsGameScreen extends StatefulWidget {
-  const CountObjectsGameScreen({super.key});
+  /// Matches [GameInfo] id for Count the Objects (LKG list); completion is stored per [grade].
+  static const String progressGameId = 'lkg2';
+
+  final Grade grade;
+
+  const CountObjectsGameScreen({super.key, required this.grade});
 
   @override
   State<CountObjectsGameScreen> createState() => _CountObjectsGameScreenState();
@@ -67,6 +126,8 @@ class _CountObjectsGameScreenState extends State<CountObjectsGameScreen>
   _RoundConfig? _current;
 
   int _correctAnswers = 0;
+  int _firstTryCorrect = 0;
+  int _picksThisRound = 0;
   int _totalAttempts = 0;
   DateTime _sessionStart = DateTime.now();
 
@@ -74,6 +135,8 @@ class _CountObjectsGameScreenState extends State<CountObjectsGameScreen>
   int? _selectedWrong;
   bool _showStarBurst = false;
   bool _showWrongAnswerPopup = false;
+  bool _showLevel2Intro = false;
+  bool _level2IntroShown = false;
   bool _gameComplete = false;
   late final Completer<void> _ttsEngineReady;
 
@@ -108,11 +171,12 @@ class _CountObjectsGameScreenState extends State<CountObjectsGameScreen>
     try {
       // Web: `true` here can make `speak()` hang or fight the browser synth → stuck audio.
       // Mobile: wait for real completion so we do not stack utterances.
-      await _tts.awaitSpeakCompletion(!kIsWeb);
-      await _tts.setLanguage('en-US');
-      await _tts.setSpeechRate(kIsWeb ? 0.5 : 0.48);
-      await _tts.setPitch(1.05);
-      await _tts.setVolume(1.0);
+      await JoydaTtsConfig.configureNarration(
+        _tts,
+        awaitSpeakCompletion: !kIsWeb,
+        speechRate: kIsWeb ? 0.5 : 0.48,
+        pitch: 1.05,
+      );
     } catch (_) {
       // Engine may still speak on some platforms after a failed init step.
     } finally {
@@ -137,6 +201,7 @@ class _CountObjectsGameScreenState extends State<CountObjectsGameScreen>
 
   Future<void> _speak(String text, {bool hardInterrupt = false}) async {
     if (text.isEmpty) return;
+    final spoken = JoydaTtsConfig.casualNarration(text);
     final gate = Completer<void>();
     final previous = _ttsQueue;
     _ttsQueue = gate.future;
@@ -158,10 +223,10 @@ class _CountObjectsGameScreenState extends State<CountObjectsGameScreen>
           await Future<void>.delayed(const Duration(milliseconds: 220));
           if (!mounted) return;
         }
-        final minMs = _ttsMinSpeechHoldMs(text);
+        final minMs = _ttsMinSpeechHoldMs(spoken);
         final sw = Stopwatch()..start();
         try {
-          await _tts.speak(text).timeout(_ttsSpeakTimeout);
+          await _tts.speak(spoken).timeout(_ttsSpeakTimeout);
         } catch (_) {
           try {
             await _tts.stop();
@@ -197,15 +262,33 @@ class _CountObjectsGameScreenState extends State<CountObjectsGameScreen>
   }
 
   void _nextRound() {
+    final enteringLevel2 = _roundIndex == _level1Rounds && !_level2IntroShown;
     setState(() {
       _current = _generateRound();
       _answeredCorrectly = false;
+      _picksThisRound = 0;
       _selectedWrong = null;
       _showStarBurst = false;
       _showWrongAnswerPopup = false;
       _difficultyLevel = _roundIndex < _level1Rounds ? 1 : 2;
+      _showLevel2Intro = enteringLevel2;
     });
+    if (enteringLevel2) {
+      return;
+    }
     // Gap after previous line finished (min-hold + tail already ran in _speak).
+    final gap = kIsWeb ? const Duration(milliseconds: 550) : const Duration(milliseconds: 220);
+    Future<void>.delayed(gap).then((_) {
+      if (mounted) unawaited(_announceRoundInstruction());
+    });
+  }
+
+  void _dismissLevel2Intro() {
+    HapticFeedback.lightImpact();
+    setState(() {
+      _showLevel2Intro = false;
+      _level2IntroShown = true;
+    });
     final gap = kIsWeb ? const Duration(milliseconds: 550) : const Duration(milliseconds: 220);
     Future<void>.delayed(gap).then((_) {
       if (mounted) unawaited(_announceRoundInstruction());
@@ -236,12 +319,17 @@ class _CountObjectsGameScreenState extends State<CountObjectsGameScreen>
   }
 
   Future<void> _onPickNumber(int value) async {
-    if (_gameComplete || _current == null || _answeredCorrectly || _showWrongAnswerPopup) {
+    if (_gameComplete ||
+        _current == null ||
+        _answeredCorrectly ||
+        _showWrongAnswerPopup ||
+        _showLevel2Intro) {
       return;
     }
 
     final cfg = _current!;
     _totalAttempts++;
+    _picksThisRound++;
 
     if (value == cfg.correct) {
       setState(() {
@@ -250,6 +338,9 @@ class _CountObjectsGameScreenState extends State<CountObjectsGameScreen>
         _correctAnswers++;
         _showStarBurst = true;
       });
+      if (_picksThisRound == 1) {
+        _firstTryCorrect++;
+      }
       HapticFeedback.mediumImpact();
       _starBurstController.forward(from: 0);
       await Future<void>.delayed(const Duration(seconds: 1));
@@ -259,7 +350,17 @@ class _CountObjectsGameScreenState extends State<CountObjectsGameScreen>
       if (!mounted) return;
 
       if (_roundIndex + 1 >= _totalRounds) {
-        setState(() => _gameComplete = true);
+        final r = _roundScoreStars();
+        if (mounted) {
+          context.read<AppState>().completeGame(
+                widget.grade,
+                CountObjectsGameScreen.progressGameId,
+                score: r.score,
+                stars: r.stars,
+                timeSpent: _timeSpent,
+              );
+        }
+        if (mounted) setState(() => _gameComplete = true);
         return;
       }
 
@@ -272,20 +373,36 @@ class _CountObjectsGameScreenState extends State<CountObjectsGameScreen>
       });
       HapticFeedback.heavyImpact();
       unawaited(_shakeController.forward(from: 0));
-      final wrongLine = kIsWeb
-          ? 'Oops, try again. ${cfg.kind.instructionPhraseForTts}.'
-          : 'Oops, try again. ${cfg.kind.instructionPhrase}.';
-      await Future<void>.delayed(const Duration(seconds: 1));
-      if (!mounted) return;
-      await _speak(wrongLine, hardInterrupt: true);
-      if (!mounted) return;
-      await Future<void>.delayed(const Duration(milliseconds: 280));
-      if (!mounted) return;
-      setState(() {
-        _showWrongAnswerPopup = false;
-        _selectedWrong = null;
-      });
+      unawaited(_runWrongAnswerFeedback());
     }
+  }
+
+  Future<void> _runWrongAnswerFeedback() async {
+    await Future<void>.delayed(const Duration(seconds: 1));
+    if (!mounted || !_showWrongAnswerPopup) return;
+    final wrongLine = 'Oops! Let us try the next question.';
+    await _speak(wrongLine, hardInterrupt: true);
+    if (!mounted) return;
+    setState(() {
+      _showWrongAnswerPopup = false;
+      _selectedWrong = null;
+    });
+    if (_roundIndex + 1 >= _totalRounds) {
+      final r = _roundScoreStars();
+      if (mounted) {
+        context.read<AppState>().completeGame(
+              widget.grade,
+              CountObjectsGameScreen.progressGameId,
+              score: r.score,
+              stars: r.stars,
+              timeSpent: _timeSpent,
+            );
+      }
+      if (mounted) setState(() => _gameComplete = true);
+      return;
+    }
+    setState(() => _roundIndex++);
+    _nextRound();
   }
 
   void _restartGame() {
@@ -295,6 +412,8 @@ class _CountObjectsGameScreenState extends State<CountObjectsGameScreen>
     setState(() {
       _roundIndex = 0;
       _correctAnswers = 0;
+      _firstTryCorrect = 0;
+      _picksThisRound = 0;
       _totalAttempts = 0;
       _sessionStart = DateTime.now();
       _gameComplete = false;
@@ -302,6 +421,8 @@ class _CountObjectsGameScreenState extends State<CountObjectsGameScreen>
       _selectedWrong = null;
       _showStarBurst = false;
       _showWrongAnswerPopup = false;
+      _showLevel2Intro = false;
+      _level2IntroShown = false;
     });
     _nextRound();
   }
@@ -311,11 +432,11 @@ class _CountObjectsGameScreenState extends State<CountObjectsGameScreen>
     Navigator.of(context).pop();
   }
 
-  int _starsEarned() {
-    final ratio = _correctAnswers / _totalRounds;
-    if (ratio >= 0.9) return 3;
-    if (ratio >= 0.6) return 2;
-    return 1;
+  ({int score, int stars}) _roundScoreStars() {
+    return scoreAndStarsRoundGameMinusWrongTaps(
+      roundsCorrect: _correctAnswers,
+      totalAttempts: _totalAttempts,
+    );
   }
 
   Duration get _timeSpent => DateTime.now().difference(_sessionStart);
@@ -334,14 +455,18 @@ class _CountObjectsGameScreenState extends State<CountObjectsGameScreen>
   @override
   Widget build(BuildContext context) {
     if (_gameComplete) {
-      return _EndScreen(
-        stars: _starsEarned(),
-        correctAnswers: _correctAnswers,
-        totalRounds: _totalRounds,
-        attempts: _totalAttempts,
-        timeSpent: _timeSpent,
-        onReplay: _restartGame,
-        onHome: () => _goHome(context),
+      final end = _roundScoreStars();
+      return PostGamePraiseGate(
+        child: _EndScreen(
+          stars: end.stars,
+          score: end.score,
+          firstTryCorrect: _firstTryCorrect,
+          totalRounds: _totalRounds,
+          attempts: _totalAttempts,
+          timeSpent: _timeSpent,
+          onReplay: _restartGame,
+          onHome: () => _goHome(context),
+        ),
       );
     }
 
@@ -384,6 +509,7 @@ class _CountObjectsGameScreenState extends State<CountObjectsGameScreen>
               ),
               if (_showStarBurst) _buildStarBurstOverlay(),
               if (_showWrongAnswerPopup) _buildWrongAnswerOverlay(),
+              if (_showLevel2Intro) _buildLevel2IntroOverlay(),
             ],
           ),
         ),
@@ -510,6 +636,67 @@ class _CountObjectsGameScreenState extends State<CountObjectsGameScreen>
     );
   }
 
+  Widget _buildLevel2IntroOverlay() {
+    final accent = AppColors.primaryBlue;
+    return Positioned.fill(
+      child: Material(
+        color: Colors.black.withValues(alpha: 0.5),
+        child: Center(
+          child: Container(
+            constraints: const BoxConstraints(maxWidth: 320),
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: accent, width: 3),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.2),
+                  blurRadius: 10,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.rocket_launch_rounded, color: accent, size: 56),
+                const SizedBox(height: 14),
+                Text(
+                  'Level 2',
+                  style: AppTypography.cardTitle(fontSize: 26, color: accent),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  'Nice work! Now you can count up to 10 objects on the screen.',
+                  style: AppTypography.body(fontSize: 16, color: AppColors.bodyText),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 22),
+                SizedBox(
+                  width: double.infinity,
+                  height: 48,
+                  child: FilledButton(
+                    onPressed: _dismissLevel2Intro,
+                    style: FilledButton.styleFrom(
+                      backgroundColor: accent,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                    ),
+                    child: Text(
+                      "Let's go!",
+                      style: AppTypography.cardTitle(fontSize: 17, color: Colors.white),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildWrongAnswerOverlay() {
     const accent = Color(0xFFE53935);
     return Positioned.fill(
@@ -539,6 +726,12 @@ class _CountObjectsGameScreenState extends State<CountObjectsGameScreen>
                 Text(
                   'Wrong answer',
                   style: AppTypography.cardTitle(fontSize: 24, color: accent),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  'Listen for the hint, then tap another answer.',
+                  style: AppTypography.body(fontSize: 14, color: AppColors.bodyText, height: 1.35),
                   textAlign: TextAlign.center,
                 ),
               ],
@@ -573,20 +766,68 @@ class _ObjectGlyph extends StatelessWidget {
 
   const _ObjectGlyph({required this.kind, required this.size});
 
+  static const Map<_CountableKind, String> _emoji = {
+    _CountableKind.apple: '🍎',
+    _CountableKind.flower: '🌸',
+    _CountableKind.butterfly: '🦋',
+    _CountableKind.fish: '🐟',
+    _CountableKind.car: '🚗',
+    _CountableKind.bear: '🧸',
+    _CountableKind.moon: '🌙',
+    _CountableKind.cupcake: '🧁',
+    _CountableKind.tree: '🌳',
+    _CountableKind.duck: '🦆',
+    _CountableKind.sun: '☀️',
+    _CountableKind.grape: '🍇',
+    _CountableKind.orange: '🍊',
+  };
+
   @override
   Widget build(BuildContext context) {
     switch (kind) {
-      case _CountableKind.apple:
-        return Text('🍎', style: TextStyle(fontSize: size * 0.95));
       case _CountableKind.star:
         return Icon(Icons.star_rounded, size: size, color: AppColors.warmYellow);
+      case _CountableKind.laptop:
+        return Icon(Icons.laptop_mac_rounded, size: size, color: AppColors.primaryBlue);
       case _CountableKind.ball:
         return Image.asset(
           'images/ball.png',
           width: size,
           height: size,
           fit: BoxFit.contain,
+          errorBuilder: (_, __, ___) => Text('⚽', style: TextStyle(fontSize: size * 0.95)),
         );
+      case _CountableKind.rock:
+        return Image.asset(
+          'images/rock.png',
+          width: size,
+          height: size,
+          fit: BoxFit.contain,
+          errorBuilder: (_, __, ___) => Text('🪨', style: TextStyle(fontSize: size * 0.95)),
+        );
+      case _CountableKind.leaf:
+        return Image.asset(
+          'images/leaf.png',
+          width: size,
+          height: size,
+          fit: BoxFit.contain,
+          errorBuilder: (_, __, ___) => Text('🍃', style: TextStyle(fontSize: size * 0.95)),
+        );
+      case _CountableKind.apple:
+      case _CountableKind.flower:
+      case _CountableKind.butterfly:
+      case _CountableKind.fish:
+      case _CountableKind.car:
+      case _CountableKind.bear:
+      case _CountableKind.moon:
+      case _CountableKind.cupcake:
+      case _CountableKind.tree:
+      case _CountableKind.duck:
+      case _CountableKind.sun:
+      case _CountableKind.grape:
+      case _CountableKind.orange:
+        final ch = _emoji[kind] ?? '❓';
+        return Text(ch, style: TextStyle(fontSize: size * 0.95));
     }
   }
 }
@@ -683,16 +924,19 @@ class _StarBurstPainter extends CustomPainter {
 
 class _EndScreen extends StatelessWidget {
   final int stars;
-  final int correctAnswers;
+  final int score;
+  final int firstTryCorrect;
   final int totalRounds;
   final int attempts;
   final Duration timeSpent;
   final VoidCallback onReplay;
   final VoidCallback onHome;
 
-  const _EndScreen({
+  // ignore: prefer_const_constructors_in_immutables — non-const avoids hot-reload failures when fields change
+  _EndScreen({
     required this.stars,
-    required this.correctAnswers,
+    required this.score,
+    required this.firstTryCorrect,
     required this.totalRounds,
     required this.attempts,
     required this.timeSpent,
@@ -749,14 +993,23 @@ class _EndScreen extends StatelessWidget {
                     ),
                   ),
                 ),
-                const SizedBox(height: 28),
+                const SizedBox(height: 8),
                 Text(
-                  '$correctAnswers / $totalRounds correct',
-                  style: AppTypography.cardTitle(fontSize: 20),
+                  'Score: $score / 100',
+                  style: AppTypography.body(
+                    fontSize: 22,
+                    color: AppColors.bodyText,
+                  ).copyWith(fontWeight: FontWeight.w700),
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Attempts: $attempts · Time: ${_formatDuration(timeSpent)}',
+                  'First try: $firstTryCorrect / $totalRounds',
+                  style: AppTypography.cardTitle(fontSize: 18, color: AppColors.heading),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Total taps: $attempts · Time: ${_formatDuration(timeSpent)}',
                   style: AppTypography.body(fontSize: 15),
                   textAlign: TextAlign.center,
                 ),
@@ -770,7 +1023,7 @@ class _EndScreen extends StatelessWidget {
                       backgroundColor: AppColors.primaryBlue,
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                     ),
-                    child: Text('Replay', style: AppTypography.cardTitle(fontSize: 18, color: Colors.white)),
+                    child: Text('Try again', style: AppTypography.cardTitle(fontSize: 18, color: Colors.white)),
                   ),
                 ),
                 const SizedBox(height: 12),

@@ -24,6 +24,14 @@ class _GradeGamesScreenState extends State<GradeGamesScreen> {
     return game.id.startsWith('g4sci') || game.id.startsWith('g5sci');
   }
 
+  bool _isExplorerGame(GameInfo game) {
+    return game.id.startsWith('g4exp') || game.id.startsWith('g5exp');
+  }
+
+  bool _isEnglishGame(GameInfo game) {
+    return game.id.startsWith('g4eng') || game.id.startsWith('g5eng');
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -49,7 +57,7 @@ class _GradeGamesScreenState extends State<GradeGamesScreen> {
       final n = state.gamesFor(widget.grade).length;
       final subtitle = widget.grade.isLowerGrade
           ? '$n games · All unlocked · Free exploration'
-          : '$n games · Sequential unlock';
+          : '$n games · Level-based unlock in each subject';
 
       return Container(
       width: double.infinity,
@@ -165,9 +173,13 @@ class _GradeGamesScreenState extends State<GradeGamesScreen> {
         final games = _isUpperGrade
             ? allGames
                 .where(
-                  (game) => _subjectFilter == _UpperSubjectFilter.maths
-                      ? !_isScienceGame(game)
-                      : _isScienceGame(game),
+                  (game) => switch (_subjectFilter) {
+                    _UpperSubjectFilter.maths =>
+                      !_isScienceGame(game) && !_isExplorerGame(game) && !_isEnglishGame(game),
+                    _UpperSubjectFilter.science => _isScienceGame(game),
+                    _UpperSubjectFilter.explorer => _isExplorerGame(game),
+                    _UpperSubjectFilter.english => _isEnglishGame(game),
+                  },
                 )
                 .toList()
             : allGames;
@@ -181,7 +193,9 @@ class _GradeGamesScreenState extends State<GradeGamesScreen> {
                 itemCount: games.length,
                 itemBuilder: (context, index) {
                   final game = games[index];
-                  final unlocked = state.isGameUnlocked(widget.grade, game.id);
+                  final unlocked = _isUpperGrade
+                      ? _isSequentiallyUnlockedInSubject(state, games, index)
+                      : state.isGameUnlocked(widget.grade, game.id);
                   final progress = state.getGameProgress(widget.grade, game.id);
                   return Padding(
                     padding: const EdgeInsets.only(bottom: 14),
@@ -209,6 +223,20 @@ class _GradeGamesScreenState extends State<GradeGamesScreen> {
     );
   }
 
+  bool _isSequentiallyUnlockedInSubject(AppState state, List<GameInfo> subjectGames, int index) {
+    final current = subjectGames[index];
+    final currentProgress = state.getGameProgress(widget.grade, current.id);
+    if (currentProgress?.completed == true) {
+      return true;
+    }
+    if (index == 0) {
+      return true;
+    }
+    final previous = subjectGames[index - 1];
+    final previousProgress = state.getGameProgress(widget.grade, previous.id);
+    return previousProgress?.completed == true;
+  }
+
   Widget _buildSubjectTabs() {
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
@@ -229,6 +257,24 @@ class _GradeGamesScreenState extends State<GradeGamesScreen> {
               selected: _subjectFilter == _UpperSubjectFilter.science,
               onTap: () => setState(() => _subjectFilter = _UpperSubjectFilter.science),
               icon: Icons.science_rounded,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: _SubjectButton(
+              label: 'Explorer',
+              selected: _subjectFilter == _UpperSubjectFilter.explorer,
+              onTap: () => setState(() => _subjectFilter = _UpperSubjectFilter.explorer),
+              icon: Icons.public_rounded,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: _SubjectButton(
+              label: 'English',
+              selected: _subjectFilter == _UpperSubjectFilter.english,
+              onTap: () => setState(() => _subjectFilter = _UpperSubjectFilter.english),
+              icon: Icons.edit_note_rounded,
             ),
           ),
         ],
@@ -374,7 +420,7 @@ class _GameListCard extends StatelessWidget {
                   completed: completed,
                   started: started,
                   progressValue: progressValue,
-                  stars: completed ? 3 : stars,
+                  stars: stars,
                 ),
               ],
             ),
@@ -447,6 +493,15 @@ class _GameIcon extends StatelessWidget {
       case 'g43':
       case 'g53':
         return Icons.emoji_events_rounded; // Math Master Challenge
+      case 'g4exp1':
+      case 'g5exp1':
+        return Icons.public_rounded; // India Map Challenge
+      case 'g4exp2':
+      case 'g5exp2':
+        return Icons.water_drop_rounded; // Float or Sink
+      case 'g4eng1':
+      case 'g5eng1':
+        return Icons.edit_note_rounded;
       default:
         return Icons.sports_esports_rounded;
     }
@@ -469,12 +524,20 @@ class _StatusWidget extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (completed) {
+      final earnedStars = stars.clamp(0, 3);
       return Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           Row(
             mainAxisSize: MainAxisSize.min,
-            children: List.generate(3, (i) => Icon(Icons.star_rounded, color: AppColors.warmYellow, size: 20)),
+            children: List.generate(
+              3,
+              (i) => Icon(
+                Icons.star_rounded,
+                color: i < earnedStars ? AppColors.warmYellow : Colors.grey.shade300,
+                size: 20,
+              ),
+            ),
           ),
           const SizedBox(height: 2),
           Text(
@@ -549,7 +612,7 @@ class _NavItem extends StatelessWidget {
   }
 }
 
-enum _UpperSubjectFilter { maths, science }
+enum _UpperSubjectFilter { maths, science, explorer, english }
 
 class _SubjectButton extends StatelessWidget {
   final String label;
@@ -573,7 +636,7 @@ class _SubjectButton extends StatelessWidget {
         onTap: onTap,
         borderRadius: BorderRadius.circular(12),
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 10),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(12),
             border: Border.all(
@@ -586,14 +649,19 @@ class _SubjectButton extends StatelessWidget {
             children: [
               Icon(
                 icon,
-                size: 18,
+                size: 16,
                 color: selected ? AppColors.primaryBlue : AppColors.bodyText,
               ),
-              const SizedBox(width: 8),
-              Text(
-                label,
-                style: (selected ? AppTypography.cardTitle(fontSize: 14) : AppTypography.body(fontSize: 14))
-                    .copyWith(color: selected ? AppColors.primaryBlue : AppColors.bodyText),
+              const SizedBox(width: 4),
+              Expanded(
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.center,
+                  style: (selected ? AppTypography.cardTitle(fontSize: 12) : AppTypography.body(fontSize: 12))
+                      .copyWith(color: selected ? AppColors.primaryBlue : AppColors.bodyText),
+                ),
               ),
             ],
           ),

@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import '../core/app_colors.dart';
 import '../widgets/joyda_logo.dart';
 import '../widgets/onboarding_illustration.dart';
+import 'auth/login_screen.dart';
+import 'auth/signup_screen.dart';
 
 class LoginSignupScreen extends StatelessWidget {
   const LoginSignupScreen({super.key});
@@ -74,7 +76,9 @@ class LoginSignupScreen extends StatelessWidget {
                       height: 52,
                       child: FilledButton(
                         onPressed: () {
-                          // TODO: Navigate to login
+                          Navigator.of(context).push(
+                            MaterialPageRoute<void>(builder: (context) => const LoginScreen()),
+                          );
                         },
                         style: FilledButton.styleFrom(
                           backgroundColor: AppColors.primaryBlue,
@@ -96,7 +100,9 @@ class LoginSignupScreen extends StatelessWidget {
                       height: 52,
                       child: OutlinedButton(
                         onPressed: () {
-                          // TODO: Navigate to sign up
+                          Navigator.of(context).push(
+                            MaterialPageRoute<void>(builder: (context) => const SignupScreen()),
+                          );
                         },
                         style: OutlinedButton.styleFrom(
                           foregroundColor: AppColors.primaryBlue,

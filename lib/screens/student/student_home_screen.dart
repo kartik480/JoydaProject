@@ -6,6 +6,21 @@ import '../../core/app_state.dart';
 import 'grade_games_screen.dart';
 import 'lkg_game_cards_screen.dart';
 
+/// Uses the device local clock (same as [DateTime.now]).
+String _studentHomeTimeGreeting() {
+  final hour = DateTime.now().hour;
+  if (hour >= 5 && hour < 12) return 'Good Morning ☀️';
+  if (hour >= 12 && hour < 17) return 'Good Afternoon 🌤️';
+  if (hour >= 17 && hour < 21) return 'Good Evening 🌆';
+  return 'Good Night 🌙';
+}
+
+int _homeDisplayedGameCount(AppState state, Grade grade) {
+  if (!grade.isLowerGrade) return state.gamesFor(grade).length;
+  // Lower-grade home cards open `LkgGameCardsScreen`, which currently shows 3 game tiles.
+  return 3;
+}
+
 class StudentHomeScreen extends StatefulWidget {
   const StudentHomeScreen({super.key});
 
@@ -39,11 +54,14 @@ class _StudentHomeScreenState extends State<StudentHomeScreen> {
       int total = 0, completed = 0;
       for (final g in Grade.values) {
         final games = state.gamesFor(g);
+        final displayCount = _homeDisplayedGameCount(state, g);
         final prog = state.progressFor(g);
+        int completedForGrade = 0;
         for (final game in games) {
-          total++;
-          if (prog[game.id]?.completed == true) completed++;
+          if (prog[game.id]?.completed == true) completedForGrade++;
         }
+        total += displayCount;
+        completed += completedForGrade > displayCount ? displayCount : completedForGrade;
       }
       final pct = total > 0 ? (completed / total * 100).round() : 0;
 
@@ -78,7 +96,7 @@ class _StudentHomeScreenState extends State<StudentHomeScreen> {
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 Text(
-                  'Good Morning ☀️',
+                  _studentHomeTimeGreeting(),
                   style: AppTypography.body(fontSize: 14, color: Colors.white.withValues(alpha: 0.8)),
                 ),
                 Icon(Icons.notifications_rounded, color: AppColors.warmYellow, size: 26),
@@ -86,7 +104,7 @@ class _StudentHomeScreenState extends State<StudentHomeScreen> {
             ),
             const SizedBox(height: 6),
             Text(
-              'Hi, Arjun! 👋',
+              'Hi, ${state.userGreetingName}! 👋',
               style: AppTypography.screenTitle(fontSize: 24, color: Colors.white),
             ),
             const SizedBox(height: 2),
@@ -237,6 +255,7 @@ class _GradeGridCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Consumer<AppState>(builder: (context, state, _) {
       final games = state.gamesFor(grade);
+      final displayCount = _homeDisplayedGameCount(state, grade);
       final prog = state.progressFor(grade);
       int done = 0;
       for (final g in games) {
@@ -244,7 +263,7 @@ class _GradeGridCard extends StatelessWidget {
       }
       final pct = games.isEmpty ? 0.0 : done / games.length;
       final (icon, iconBg, progressColor) = _styleFor(grade);
-      final isUkg = grade == Grade.ukg;
+      final borderColor = progressColor.withValues(alpha: 0.72);
 
       return Material(
         color: AppColors.backgroundCard,
@@ -273,8 +292,8 @@ class _GradeGridCard extends StatelessWidget {
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(16),
               border: Border.all(
-                color: isUkg ? AppColors.warmYellow.withValues(alpha: 0.7) : Colors.grey.shade200,
-                width: isUkg ? 1.5 : 1,
+                color: borderColor,
+                width: 1.5,
               ),
             ),
             child: Column(
@@ -298,7 +317,7 @@ class _GradeGridCard extends StatelessWidget {
                   style: AppTypography.screenTitle(fontSize: 17, color: AppColors.studentHeaderNav),
                 ),
                 Text(
-                  grade.isLowerGrade ? '${games.length} games · All open' : 'Sequential unlock',
+                  '$displayCount games · All open',
                   textAlign: TextAlign.center,
                   style: AppTypography.body(fontSize: 12),
                 ),

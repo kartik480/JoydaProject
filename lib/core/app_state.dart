@@ -1,4 +1,33 @@
+import 'dart:convert';
+import 'dart:math';
+
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
+
+import 'joyda_auth_store.dart';
+
+String _randomSalt() {
+  final rnd = Random.secure();
+  final bytes = List<int>.generate(16, (_) => rnd.nextInt(256));
+  return base64UrlEncode(bytes);
+}
+
+String _hashPassword(String salt, String password) {
+  return sha256.convert(utf8.encode('$salt::$password')).toString();
+}
+
+UserRole? _userRoleFromStored(dynamic raw) {
+  if (raw is! String) return null;
+  final v = raw.trim().toLowerCase();
+  switch (v) {
+    case 'student':
+      return UserRole.student;
+    case 'teacher':
+      return UserRole.teacher;
+    default:
+      return null;
+  }
+}
 
 enum UserRole { student, teacher }
 
@@ -53,19 +82,136 @@ class GameProgress {
   });
 }
 
-/// Pilot: in-memory state. LKG/UKG = 5 games each, all unlocked. 4th/5th = sequential unlock.
+/// Pilot: in-memory state. All grades: every listed game is unlocked on the games screen.
 class AppState extends ChangeNotifier {
   String? _userEmailOrPhone;
+  String? _userDisplayName;
   UserRole? _role;
   Grade? _selectedGrade;
 
   String? get userEmailOrPhone => _userEmailOrPhone;
+  /// Full name from sign-up (e.g. "Priya Sharma"); used for greetings.
+  String? get userDisplayName => _userDisplayName;
   UserRole? get role => _role;
   Grade? get selectedGrade => _selectedGrade;
 
-  void setUser(String emailOrPhone) {
-    _userEmailOrPhone = emailOrPhone;
+  /// Name shown after "Hi, …" on the student home panel.
+  String get userGreetingName =>
+      (_userDisplayName != null && _userDisplayName!.trim().isNotEmpty)
+          ? _userDisplayName!.trim()
+          : (_userEmailOrPhone?.trim().isNotEmpty == true ? _userEmailOrPhone!.trim() : 'Student');
+
+  /// Persists profile (username + password hash) and sets the current session.
+  /// Returns `null` on success, or an error message (e.g. username already taken).
+  Future<String?> registerAccount({
+    required String username,
+    required String firstName,
+    required String lastName,
+    required String email,
+    required String password,
+    required UserRole role,
+  }) async {
+    final u = username.trim();
+    final key = u.toLowerCase();
+    final display = '${firstName.trim()} ${lastName.trim()}'.trim();
+    final raw = await loadJoydaAuthProfilesJson();
+    final map = <String, dynamic>{};
+    if (raw != null && raw.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is Map) {
+          for (final e in decoded.entries) {
+            map[e.key.toString().toLowerCase()] = e.value;
+          }
+        }
+      } catch (_) {}
+    }
+    final existing = map[key];
+    if (existing is Map) {
+      final em = Map<String, dynamic>.from(existing);
+      final hasPwd = (em['passwordHash'] is String && (em['passwordHash'] as String).isNotEmpty) &&
+          (em['salt'] is String && (em['salt'] as String).isNotEmpty);
+      if (hasPwd) {
+        return 'That username is already taken. Log in or pick another username.';
+      }
+    } else if (existing != null) {
+      return 'That username is already taken. Log in or pick another username.';
+    }
+    final salt = _randomSalt();
+    final passwordHash = _hashPassword(salt, password);
+    final emailTrim = email.trim();
+    _userEmailOrPhone = u;
+    _userDisplayName = display.isNotEmpty ? display : u;
+    _role = role;
+    map[key] = {
+      'displayName': _userDisplayName,
+      'email': emailTrim,
+      'role': role.name,
+      'salt': salt,
+      'passwordHash': passwordHash,
+    };
+    final encoded = jsonEncode(map);
+    final saveErr = await saveJoydaAuthProfilesJson(encoded);
+    if (saveErr != null) {
+      return saveErr;
+    }
     notifyListeners();
+    return null;
+  }
+
+  /// Verifies username or email + password against saved sign-up data, then starts session.
+  /// Returns `null` on success, or an error message.
+  Future<String?> loginAccount(String username, String password) async {
+    final u = username.trim();
+    final key = u.toLowerCase();
+    final raw = await loadJoydaAuthProfilesJson();
+    Map<String, dynamic>? entry;
+    String? resolvedUsernameKey;
+    if (raw != null && raw.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is Map) {
+          final root = decoded.map((k, v) => MapEntry(k.toString().toLowerCase(), v));
+          final byName = root[key];
+          if (byName is Map) {
+            entry = byName.map((k, v) => MapEntry(k.toString(), v));
+            resolvedUsernameKey = key;
+          } else {
+            for (final e in root.entries) {
+              if (e.value is! Map) continue;
+              final pm = (e.value as Map).map((k, v) => MapEntry(k.toString(), v));
+              final em = pm['email'];
+              if (em is String && em.trim().toLowerCase() == key) {
+                entry = pm;
+                resolvedUsernameKey = e.key;
+                break;
+              }
+            }
+          }
+        }
+      } catch (_) {}
+    }
+    if (entry == null) {
+      return 'No account found for that username or email.';
+    }
+    final salt = entry['salt'] as String?;
+    final storedHash = entry['passwordHash'] as String?;
+    if (salt == null || storedHash == null || salt.isEmpty || storedHash.isEmpty) {
+      return 'This account has no saved password. Please sign up again.';
+    }
+    if (_hashPassword(salt, password) != storedHash) {
+      return 'Incorrect password.';
+    }
+    _userEmailOrPhone = resolvedUsernameKey ?? u;
+    final d = entry['displayName'];
+    if (d is String && d.trim().isNotEmpty) {
+      _userDisplayName = d.trim();
+    } else {
+      _userDisplayName = u;
+    }
+    _role = _userRoleFromStored(entry['role']);
+    notifyListeners();
+    return null;
   }
 
   void setRole(UserRole role) {
@@ -80,6 +226,7 @@ class AppState extends ChangeNotifier {
 
   void logout() {
     _userEmailOrPhone = null;
+    _userDisplayName = null;
     _role = null;
     _selectedGrade = null;
     _progress.clear();
@@ -102,7 +249,6 @@ class AppState extends ChangeNotifier {
           GameInfo(id: 'lkg2', name: 'Count the Objects', difficulty: 'Easy', order: 2),
           GameInfo(id: 'lkg3', name: 'Match the Picture', difficulty: 'Easy', order: 3),
           GameInfo(id: 'lkg4', name: 'Alphabet with Color Pop', difficulty: 'Easy', order: 4),
-          GameInfo(id: 'lkg5', name: 'Sentence Builder', difficulty: 'Easy', order: 5),
         ];
       case Grade.ukg:
         return const [
@@ -110,7 +256,6 @@ class AppState extends ChangeNotifier {
           GameInfo(id: 'ukg2', name: 'Simple Addition', difficulty: 'Easy', order: 2),
           GameInfo(id: 'ukg3', name: 'What Comes Next?', difficulty: 'Medium', order: 3),
           GameInfo(id: 'ukg4', name: 'Alphabet with Color Pop', difficulty: 'Easy', order: 4),
-          GameInfo(id: 'ukg5', name: 'Sentence Builder', difficulty: 'Easy', order: 5),
         ];
       case Grade.grade4:
         return const [
@@ -120,6 +265,9 @@ class AppState extends ChangeNotifier {
           GameInfo(id: 'g4sci1', name: 'Plants Around Us', difficulty: 'Easy', order: 4),
           GameInfo(id: 'g4sci2', name: 'Food Match', difficulty: 'Medium', order: 5),
           GameInfo(id: 'g4sci3', name: 'States of Matter', difficulty: 'Hard', order: 6),
+          GameInfo(id: 'g4exp1', name: 'India Map Challenge', difficulty: 'Medium', order: 7),
+          GameInfo(id: 'g4exp2', name: 'Float or Sink?', difficulty: 'Medium', order: 8),
+          GameInfo(id: 'g4eng1', name: 'Sentence Builder', difficulty: 'Medium', order: 9),
         ];
       case Grade.grade5:
         return const [
@@ -129,18 +277,16 @@ class AppState extends ChangeNotifier {
           GameInfo(id: 'g5sci1', name: 'Plants Around Us', difficulty: 'Easy', order: 4),
           GameInfo(id: 'g5sci2', name: 'Food Match', difficulty: 'Medium', order: 5),
           GameInfo(id: 'g5sci3', name: 'States of Matter', difficulty: 'Hard', order: 6),
+          GameInfo(id: 'g5exp1', name: 'India Map Challenge', difficulty: 'Medium', order: 7),
+          GameInfo(id: 'g5exp2', name: 'Float or Sink?', difficulty: 'Medium', order: 8),
+          GameInfo(id: 'g5eng1', name: 'Sentence Builder', difficulty: 'Medium', order: 9),
         ];
     }
   }
 
   bool isGameUnlocked(Grade grade, String gameId) {
     if (grade.isLowerGrade) return true;
-    final games = gamesFor(grade);
-    final prog = progressFor(grade);
-    final index = games.indexWhere((g) => g.id == gameId);
-    if (index <= 0) return true;
-    final prev = games[index - 1];
-    return prog[prev.id]?.completed ?? false;
+    return gamesFor(grade).any((g) => g.id == gameId);
   }
 
   void startGame(Grade grade, String gameId) {
@@ -172,7 +318,8 @@ class AppState extends ChangeNotifier {
     if (_studentProgress.isEmpty) {
       _studentProgress.addAll(_mockStudents());
       final current = _currentStudentSummary();
-      if (current != null && !_studentProgress.any((s) => s.name == 'You')) {
+      final currentName = current?.name ?? '';
+      if (current != null && !_studentProgress.any((s) => s.name == currentName)) {
         _studentProgress.insert(0, current);
       }
     }
@@ -197,7 +344,7 @@ class AppState extends ChangeNotifier {
     }
     final pct = totalGames > 0 ? (completed / totalGames * 100).round() : 0;
     return StudentProgressSummary(
-      name: 'You',
+      name: userGreetingName,
       gamesCompleted: completed,
       totalGames: totalGames,
       progressPercent: pct,

@@ -3,9 +3,12 @@ import 'package:provider/provider.dart';
 import '../../core/app_colors.dart';
 import '../../core/app_typography.dart';
 import '../../core/app_state.dart';
+import 'grade_explorer_games_screen.dart';
+import 'float_sink_game_screen.dart';
 import 'grade_math_games_screen.dart';
 import 'grade_science_games_screen.dart';
 import 'sentence_builder_game_screen.dart';
+import '../../widgets/post_game_praise_gate.dart';
 
 class GamePlayScreen extends StatefulWidget {
   final Grade grade;
@@ -22,7 +25,7 @@ class _GamePlayScreenState extends State<GamePlayScreen> {
   DateTime? _startTime;
 
   bool get _isSentenceBuilder =>
-      widget.game.id == 'lkg5' || widget.game.id == 'ukg5';
+      widget.game.id == 'g4eng1' || widget.game.id == 'g5eng1';
 
   bool get _isGradeMathGame {
     const ids = {'g41', 'g42', 'g43', 'g51', 'g52', 'g53'};
@@ -34,13 +37,38 @@ class _GamePlayScreenState extends State<GamePlayScreen> {
     return ids.contains(widget.game.id);
   }
 
+  bool get _isExplorerGame {
+    const ids = {'g4exp1', 'g5exp1'};
+    return ids.contains(widget.game.id);
+  }
+
+  bool get _isFloatSinkExplorerGame {
+    const ids = {'g4exp2', 'g5exp2'};
+    return ids.contains(widget.game.id);
+  }
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || _isSentenceBuilder || _isGradeMathGame || _isGradeScienceGame) return;
+      if (!mounted ||
+          _isSentenceBuilder ||
+          _isGradeMathGame ||
+          _isGradeScienceGame ||
+          _isExplorerGame ||
+          _isFloatSinkExplorerGame) {
+        return;
+      }
       context.read<AppState>().startGame(widget.grade, widget.game.id);
       setState(() => _startTime = DateTime.now());
+    });
+  }
+
+  void _replayDemo() {
+    context.read<AppState>().startGame(widget.grade, widget.game.id);
+    setState(() {
+      _completed = false;
+      _startTime = DateTime.now();
     });
   }
 
@@ -59,9 +87,12 @@ class _GamePlayScreenState extends State<GamePlayScreen> {
   @override
   Widget build(BuildContext context) {
     if (_completed) {
-      return _SuccessScreen(
-        game: widget.game,
-        onDone: () => Navigator.of(context).popUntil((Route<dynamic> route) => route.isFirst),
+      return PostGamePraiseGate(
+        child: _SuccessScreen(
+          game: widget.game,
+          onReplay: _replayDemo,
+          onDone: () => Navigator.of(context).popUntil((Route<dynamic> route) => route.isFirst),
+        ),
       );
     }
 
@@ -86,6 +117,18 @@ class _GamePlayScreenState extends State<GamePlayScreen> {
         gameId: widget.game.id,
         kind: scienceGameKindForId(widget.game.id),
       );
+    }
+
+    if (_isExplorerGame) {
+      return GradeExplorerGamesScreen(
+        grade: widget.grade,
+        gameId: widget.game.id,
+        kind: explorerGameKindForId(widget.game.id),
+      );
+    }
+
+    if (_isFloatSinkExplorerGame) {
+      return const FloatSinkGameScreen();
     }
 
     return Scaffold(
@@ -148,9 +191,10 @@ class _GamePlayScreenState extends State<GamePlayScreen> {
 
 class _SuccessScreen extends StatelessWidget {
   final GameInfo game;
+  final VoidCallback onReplay;
   final VoidCallback onDone;
 
-  const _SuccessScreen({required this.game, required this.onDone});
+  const _SuccessScreen({required this.game, required this.onReplay, required this.onDone});
 
   @override
   Widget build(BuildContext context) {
@@ -189,12 +233,18 @@ class _SuccessScreen extends StatelessWidget {
                   'Score: 85',
                   style: AppTypography.cardTitle(fontSize: 18),
                 ),
-                const SizedBox(height: 48),
+                const SizedBox(height: 10),
+                Text(
+                  'First try: 1 / 1',
+                  textAlign: TextAlign.center,
+                  style: AppTypography.cardTitle(fontSize: 18, color: AppColors.heading),
+                ),
+                const SizedBox(height: 32),
                 SizedBox(
                   width: double.infinity,
                   height: 52,
                   child: FilledButton(
-                    onPressed: onDone,
+                    onPressed: onReplay,
                     style: FilledButton.styleFrom(
                       backgroundColor: AppColors.primaryBlue,
                       foregroundColor: Colors.white,
@@ -203,7 +253,22 @@ class _SuccessScreen extends StatelessWidget {
                       ),
                       elevation: 0,
                     ),
-                    child: Text('Back to Home', style: AppTypography.cardTitle(fontSize: 16).copyWith(color: Colors.white)),
+                    child: Text('Try again', style: AppTypography.cardTitle(fontSize: 16).copyWith(color: Colors.white)),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  height: 52,
+                  child: OutlinedButton(
+                    onPressed: onDone,
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: AppColors.primaryBlue, width: 1.8),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                    ),
+                    child: Text('Back to Home', style: AppTypography.cardTitle(fontSize: 16)),
                   ),
                 ),
               ],
@@ -214,3 +279,4 @@ class _SuccessScreen extends StatelessWidget {
     );
   }
 }
+

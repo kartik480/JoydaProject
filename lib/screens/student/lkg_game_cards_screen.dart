@@ -5,8 +5,6 @@ import '../../core/app_state.dart';
 import 'alphabet_color_pop_game_screen.dart';
 import 'count_objects_game_screen.dart';
 import 'float_sink_game_screen.dart';
-import 'sentence_builder_game_screen.dart';
-
 /// LKG / UKG: choose a game card before opening the full game.
 class LkgGameCardsScreen extends StatelessWidget {
   final Grade grade;
@@ -125,7 +123,7 @@ class LkgGameCardsScreen extends StatelessWidget {
             onTap: () {
               Navigator.of(context).push(
                 MaterialPageRoute<void>(
-                  builder: (context) => const CountObjectsGameScreen(),
+                  builder: (context) => CountObjectsGameScreen(grade: grade),
                 ),
               );
             },
@@ -141,25 +139,6 @@ class LkgGameCardsScreen extends StatelessWidget {
               Navigator.of(context).push(
                 MaterialPageRoute<void>(
                   builder: (context) => AlphabetColorPopGameScreen(grade: grade),
-                ),
-              );
-            },
-          ),
-          const SizedBox(height: 14),
-          _GameCardTile(
-            title: 'Sentence Builder',
-            subtitle: 'English · Drag words into order',
-            iconBg: const Color(0xFFE8F5E9),
-            icon: Icons.edit_note_rounded,
-            iconColor: AppColors.freshGreen,
-            onTap: () {
-              final gameId = grade == Grade.ukg ? 'ukg5' : 'lkg5';
-              Navigator.of(context).push(
-                MaterialPageRoute<void>(
-                  builder: (context) => SentenceBuilderGameScreen(
-                    grade: grade,
-                    gameId: gameId,
-                  ),
                 ),
               );
             },

@@ -9,6 +9,9 @@ import 'package:provider/provider.dart';
 import '../../core/app_colors.dart';
 import '../../core/app_typography.dart';
 import '../../core/app_state.dart';
+import '../../core/joyda_tts_config.dart';
+import '../../core/game_scoring.dart';
+import '../../widgets/post_game_praise_gate.dart';
 
 enum _AskKind { letter, color, both }
 
@@ -76,6 +79,8 @@ class _AlphabetColorPopGameScreenState extends State<AlphabetColorPopGameScreen>
 
   int _roundIndex = 0;
   int _correctAnswers = 0;
+  int _firstTryCorrect = 0;
+  int _roundBubbleTaps = 0;
   int _totalAttempts = 0;
   DateTime _sessionStart = DateTime.now();
 
@@ -83,6 +88,9 @@ class _AlphabetColorPopGameScreenState extends State<AlphabetColorPopGameScreen>
   String? _shakingId;
   String? _poppingId;
   bool _showWrongAnswerPopup = false;
+  bool _showLevel1Intro = true;
+  bool _showLevel2Intro = false;
+  bool _level2IntroShown = false;
   bool _gameComplete = false;
   bool _ttsReady = false;
   late final Completer<void> _ttsEngineReady;
@@ -116,11 +124,12 @@ class _AlphabetColorPopGameScreenState extends State<AlphabetColorPopGameScreen>
 
   Future<void> _initTts() async {
     try {
-      await _tts.awaitSpeakCompletion(true);
-      await _tts.setLanguage('en-US');
-      await _tts.setSpeechRate(0.5);
-      await _tts.setPitch(1.08);
-      await _tts.setVolume(1.0);
+      await JoydaTtsConfig.configureNarration(
+        _tts,
+        awaitSpeakCompletion: true,
+        speechRate: 0.5,
+        pitch: 1.08,
+      );
       if (mounted) setState(() => _ttsReady = true);
     } catch (_) {
       if (mounted) setState(() => _ttsReady = false);
@@ -135,10 +144,12 @@ class _AlphabetColorPopGameScreenState extends State<AlphabetColorPopGameScreen>
 
   Future<void> _speak(String text) async {
     if (!_ttsReady || text.isEmpty) return;
+    final spoken = JoydaTtsConfig.casualNarration(text);
+    if (spoken.isEmpty) return;
     try {
       await _tts.stop();
       await _tts
-          .speak(text)
+          .speak(spoken)
           .timeout(_ttsSafetyTimeout, onTimeout: () {});
     } catch (_) {}
   }
@@ -248,14 +259,26 @@ class _AlphabetColorPopGameScreenState extends State<AlphabetColorPopGameScreen>
     ]..shuffle(_rng);
     final aligns = alignPool.take(count).toList();
 
+    final enteringLevel2 = _roundIndex == _simpleRounds && !_level2IntroShown;
+
     setState(() {
       _bubbles = bubbles;
       _alignments = aligns;
       _roundLocked = false;
+      _roundBubbleTaps = 0;
       _shakingId = null;
       _poppingId = null;
       _showWrongAnswerPopup = false;
+      _showLevel2Intro = enteringLevel2;
     });
+
+    if (enteringLevel2) {
+      return;
+    }
+
+    if (_showLevel1Intro) {
+      return;
+    }
 
     // Speak as soon as possible after round data is set (no extra frame wait).
     Future.microtask(() {
@@ -263,15 +286,47 @@ class _AlphabetColorPopGameScreenState extends State<AlphabetColorPopGameScreen>
     });
   }
 
+  void _dismissLevel1Intro() {
+    HapticFeedback.lightImpact();
+    setState(() => _showLevel1Intro = false);
+    Future<void>.delayed(const Duration(milliseconds: 400)).then((_) {
+      if (mounted) unawaited(_announceRoundInstruction());
+    });
+  }
+
+  void _dismissLevel2Intro() {
+    HapticFeedback.lightImpact();
+    setState(() {
+      _showLevel2Intro = false;
+      _level2IntroShown = true;
+    });
+    Future<void>.delayed(const Duration(milliseconds: 400)).then((_) {
+      if (mounted) unawaited(_announceRoundInstruction());
+    });
+  }
+
   Future<void> _announceRoundInstruction() async {
     await _ttsEngineReady.future;
-    if (!mounted || !_ttsReady) return;
+    if (!mounted ||
+        !_ttsReady ||
+        _showWrongAnswerPopup ||
+        _showLevel1Intro ||
+        _showLevel2Intro) {
+      return;
+    }
     await _speak(_instructionForVoice());
   }
 
   Future<void> _onBubbleTap(_BubbleSpec b) async {
-    if (_roundLocked || _gameComplete || _showWrongAnswerPopup) return;
+    if (_roundLocked ||
+        _gameComplete ||
+        _showWrongAnswerPopup ||
+        _showLevel1Intro ||
+        _showLevel2Intro) {
+      return;
+    }
     _totalAttempts++;
+    _roundBubbleTaps++;
 
     if (_matchesTarget(b)) {
       setState(() {
@@ -279,6 +334,9 @@ class _AlphabetColorPopGameScreenState extends State<AlphabetColorPopGameScreen>
         _poppingId = b.id;
       });
       _correctAnswers++;
+      if (_roundBubbleTaps == 1) {
+        _firstTryCorrect++;
+      }
       SystemSound.play(SystemSoundType.click);
       HapticFeedback.mediumImpact();
       _popController.forward(from: 0);
@@ -309,31 +367,48 @@ class _AlphabetColorPopGameScreenState extends State<AlphabetColorPopGameScreen>
       });
       HapticFeedback.selectionClick();
       SystemSound.play(SystemSoundType.click);
-      // Popup + shake; voice says oops then repeats the question in one flow (reliable on web TTS).
-      final again = _instructionForVoice();
-      await Future.wait([
-        _shakeController.forward(from: 0),
-        _speak('Oops, try again. $again'),
-      ]);
-      await Future<void>.delayed(const Duration(milliseconds: 200));
-      if (!mounted) return;
-      setState(() {
-        _showWrongAnswerPopup = false;
-        _shakingId = null;
-      });
+      unawaited(_runWrongAnswerAutoDismiss());
     }
+  }
+
+  Future<void> _runWrongAnswerAutoDismiss() async {
+    await Future.wait([
+      _shakeController.forward(from: 0),
+      _speak('Oops! Let us try the next one.'),
+    ]);
+    if (!mounted) return;
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+    if (!mounted) return;
+    setState(() {
+      _showWrongAnswerPopup = false;
+      _shakingId = null;
+    });
+    _shakeController.reset();
+    if (_roundIndex + 1 >= _totalRounds) {
+      _finishGame();
+      return;
+    }
+    setState(() {
+      _roundIndex++;
+      _popController.reset();
+      _starController.reset();
+    });
+    _buildRound();
   }
 
   void _finishGame() {
     if (!mounted) return;
-    final stars = _starsEarned();
     final timeSpent = DateTime.now().difference(_sessionStart);
-    final score = (_correctAnswers * 100 / _totalRounds).round();
+    final r = scoreAndStarsRoundGame(
+      roundsCorrect: _correctAnswers,
+      totalRounds: _totalRounds,
+      totalAttempts: _totalAttempts,
+    );
     context.read<AppState>().completeGame(
           widget.grade,
           widget._gameId,
-          score: score,
-          stars: stars,
+          score: r.score,
+          stars: r.stars,
           timeSpent: timeSpent,
         );
     if (!mounted) return;
@@ -343,11 +418,12 @@ class _AlphabetColorPopGameScreenState extends State<AlphabetColorPopGameScreen>
     });
   }
 
-  int _starsEarned() {
-    final ratio = _correctAnswers / _totalRounds;
-    if (ratio >= 0.9) return 3;
-    if (ratio >= 0.6) return 2;
-    return 1;
+  ({int score, int stars}) _roundScoreStars() {
+    return scoreAndStarsRoundGame(
+      roundsCorrect: _correctAnswers,
+      totalRounds: _totalRounds,
+      totalAttempts: _totalAttempts,
+    );
   }
 
   void _replay() {
@@ -357,10 +433,15 @@ class _AlphabetColorPopGameScreenState extends State<AlphabetColorPopGameScreen>
     setState(() {
       _roundIndex = 0;
       _correctAnswers = 0;
+      _firstTryCorrect = 0;
+      _roundBubbleTaps = 0;
       _totalAttempts = 0;
       _sessionStart = DateTime.now();
       _gameComplete = false;
       _showWrongAnswerPopup = false;
+      _showLevel1Intro = true;
+      _showLevel2Intro = false;
+      _level2IntroShown = false;
     });
     context.read<AppState>().startGame(widget.grade, widget._gameId);
     _buildRound();
@@ -378,7 +459,13 @@ class _AlphabetColorPopGameScreenState extends State<AlphabetColorPopGameScreen>
 
   Future<void> _replayInstructionVoice() async {
     await _ttsEngineReady.future;
-    if (!mounted || !_ttsReady) return;
+    if (!mounted ||
+        !_ttsReady ||
+        _showWrongAnswerPopup ||
+        _showLevel1Intro ||
+        _showLevel2Intro) {
+      return;
+    }
     await _speak(_instructionForVoice());
   }
 
@@ -399,15 +486,19 @@ class _AlphabetColorPopGameScreenState extends State<AlphabetColorPopGameScreen>
   @override
   Widget build(BuildContext context) {
     if (_gameComplete) {
-      return _EndScreen(
-        stars: _starsEarned(),
-        correctAnswers: _correctAnswers,
-        totalRounds: _totalRounds,
-        attempts: _totalAttempts,
-        timeSpent: DateTime.now().difference(_sessionStart),
-        confetti: _confettiController,
-        onReplay: _replay,
-        onHome: _goHome,
+      final end = _roundScoreStars();
+      return PostGamePraiseGate(
+        child: _EndScreen(
+          stars: end.stars,
+          score: end.score,
+          firstTryCorrect: _firstTryCorrect,
+          totalRounds: _totalRounds,
+          attempts: _totalAttempts,
+          timeSpent: DateTime.now().difference(_sessionStart),
+          confetti: _confettiController,
+          onReplay: _replay,
+          onHome: _goHome,
+        ),
       );
     }
 
@@ -485,26 +576,17 @@ class _AlphabetColorPopGameScreenState extends State<AlphabetColorPopGameScreen>
                       ),
                     ),
                     if (_showWrongAnswerPopup) _buildWrongAnswerOverlay(),
+                    if (_showLevel2Intro) _buildLevel2IntroOverlay(),
+                    if (_showLevel1Intro) _buildLevel1IntroOverlay(),
                   ],
                 ),
               ),
               Padding(
                 padding: const EdgeInsets.only(bottom: 10),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(Icons.star_rounded, size: 22, color: AppColors.warmYellow.withValues(alpha: 0.9)),
-                    const SizedBox(width: 6),
-                    Text(
-                      '$_correctAnswers / $_totalRounds',
-                      style: AppTypography.cardTitle(fontSize: 16),
-                    ),
-                    const SizedBox(width: 16),
-                    Text(
-                      'Q ${_roundIndex + 1} / $_totalRounds',
-                      style: AppTypography.body(fontSize: 14),
-                    ),
-                  ],
+                child: Text(
+                  'Round ${_roundIndex + 1} / $_totalRounds',
+                  textAlign: TextAlign.center,
+                  style: AppTypography.body(fontSize: 14, color: AppColors.bodyText),
                 ),
               ),
             ],
@@ -545,6 +627,12 @@ class _AlphabetColorPopGameScreenState extends State<AlphabetColorPopGameScreen>
                   style: AppTypography.cardTitle(fontSize: 24, color: accent),
                   textAlign: TextAlign.center,
                 ),
+                const SizedBox(height: 10),
+                Text(
+                  'Hang on — we will replay the hint in a moment.',
+                  style: AppTypography.body(fontSize: 14, color: AppColors.bodyText, height: 1.35),
+                  textAlign: TextAlign.center,
+                ),
               ],
             ),
           ),
@@ -572,7 +660,140 @@ class _AlphabetColorPopGameScreenState extends State<AlphabetColorPopGameScreen>
             ),
           ),
           const SizedBox(width: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.85),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Text(
+              _roundIndex < _simpleRounds ? 'Level 1' : 'Level 2',
+              style: AppTypography.cardTitle(fontSize: 13, color: AppColors.primaryBlue),
+            ),
+          ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildLevel1IntroOverlay() {
+    final accent = AppColors.primaryBlue;
+    return Positioned.fill(
+      child: Material(
+        color: Colors.black.withValues(alpha: 0.5),
+        child: Center(
+          child: Container(
+            constraints: const BoxConstraints(maxWidth: 320),
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: accent, width: 3),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.2),
+                  blurRadius: 10,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.abc_rounded, color: accent, size: 56),
+                const SizedBox(height: 14),
+                Text(
+                  'Level 1',
+                  style: AppTypography.cardTitle(fontSize: 26, color: accent),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  'Welcome! In Level 1 you will only look for a letter, or only look for a color — not both at once. Tap the speaker anytime to hear the hint again.',
+                  style: AppTypography.body(fontSize: 16, color: AppColors.bodyText),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 22),
+                SizedBox(
+                  width: double.infinity,
+                  height: 48,
+                  child: FilledButton(
+                    onPressed: _dismissLevel1Intro,
+                    style: FilledButton.styleFrom(
+                      backgroundColor: accent,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                    ),
+                    child: Text(
+                      "Let's play!",
+                      style: AppTypography.cardTitle(fontSize: 17, color: Colors.white),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLevel2IntroOverlay() {
+    final accent = AppColors.primaryBlue;
+    return Positioned.fill(
+      child: Material(
+        color: Colors.black.withValues(alpha: 0.5),
+        child: Center(
+          child: Container(
+            constraints: const BoxConstraints(maxWidth: 320),
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: accent, width: 3),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.2),
+                  blurRadius: 10,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.palette_rounded, color: accent, size: 56),
+                const SizedBox(height: 14),
+                Text(
+                  'Level 2',
+                  style: AppTypography.cardTitle(fontSize: 26, color: accent),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  'Great work on letters and colors! Now find the bubble that matches both — like “Find red A”.',
+                  style: AppTypography.body(fontSize: 16, color: AppColors.bodyText),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 22),
+                SizedBox(
+                  width: double.infinity,
+                  height: 48,
+                  child: FilledButton(
+                    onPressed: _dismissLevel2Intro,
+                    style: FilledButton.styleFrom(
+                      backgroundColor: accent,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                    ),
+                    child: Text(
+                      "Let's go!",
+                      style: AppTypography.cardTitle(fontSize: 17, color: Colors.white),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -713,7 +934,8 @@ class _BubbleButton extends StatelessWidget {
 
 class _EndScreen extends StatelessWidget {
   final int stars;
-  final int correctAnswers;
+  final int score;
+  final int firstTryCorrect;
   final int totalRounds;
   final int attempts;
   final Duration timeSpent;
@@ -721,9 +943,11 @@ class _EndScreen extends StatelessWidget {
   final VoidCallback onReplay;
   final VoidCallback onHome;
 
-  const _EndScreen({
+  // ignore: prefer_const_constructors_in_immutables — non-const avoids hot-reload failures when fields change
+  _EndScreen({
     required this.stars,
-    required this.correctAnswers,
+    required this.score,
+    required this.firstTryCorrect,
     required this.totalRounds,
     required this.attempts,
     required this.timeSpent,
@@ -783,14 +1007,20 @@ class _EndScreen extends StatelessWidget {
                         ),
                       ),
                     ),
-                    const SizedBox(height: 24),
+                    const SizedBox(height: 8),
                     Text(
-                      '$correctAnswers / $totalRounds correct',
-                      style: AppTypography.cardTitle(fontSize: 20),
+                      'Score: $score / 100',
+                      style: AppTypography.body(fontSize: 15, color: AppColors.bodyText),
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      'First try: $firstTryCorrect / $totalRounds',
+                      style: AppTypography.cardTitle(fontSize: 20, color: AppColors.heading),
+                      textAlign: TextAlign.center,
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      'Attempts: $attempts · Time: ${_fmt(timeSpent)}',
+                      'Total taps: $attempts · Time: ${_fmt(timeSpent)}',
                       style: AppTypography.body(fontSize: 15),
                       textAlign: TextAlign.center,
                     ),
@@ -804,7 +1034,7 @@ class _EndScreen extends StatelessWidget {
                           backgroundColor: AppColors.primaryBlue,
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                         ),
-                        child: Text('Replay', style: AppTypography.cardTitle(fontSize: 18, color: Colors.white)),
+                        child: Text('Try again', style: AppTypography.cardTitle(fontSize: 18, color: Colors.white)),
                       ),
                     ),
                     const SizedBox(height: 12),

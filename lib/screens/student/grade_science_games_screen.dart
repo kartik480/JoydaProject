@@ -7,6 +7,8 @@ import 'package:provider/provider.dart';
 import '../../core/app_colors.dart';
 import '../../core/app_typography.dart';
 import '../../core/app_state.dart';
+import '../../core/game_scoring.dart';
+import '../../widgets/post_game_praise_gate.dart';
 
 enum ScienceGameKind { plants, food, matter }
 
@@ -89,6 +91,13 @@ class _GradeScienceGamesScreenState extends State<GradeScienceGamesScreen>
     _ScienceItem(id: 'rice', label: 'Rice', emoji: '🍚', categoryId: 'plant'),
     _ScienceItem(id: 'apple', label: 'Apple', emoji: '🍎', categoryId: 'plant'),
     _ScienceItem(id: 'honey', label: 'Honey', emoji: '🍯', categoryId: 'animal'),
+    _ScienceItem(id: 'curd', label: 'Curd', emoji: '🥣', categoryId: 'animal'),
+    _ScienceItem(id: 'fish', label: 'Fish', emoji: '🐟', categoryId: 'animal'),
+    _ScienceItem(id: 'chicken', label: 'Chicken', emoji: '🍗', categoryId: 'animal'),
+    _ScienceItem(id: 'banana', label: 'Banana', emoji: '🍌', categoryId: 'plant'),
+    _ScienceItem(id: 'carrot', label: 'Carrot', emoji: '🥕', categoryId: 'plant'),
+    _ScienceItem(id: 'wheat', label: 'Wheat', emoji: '🌾', categoryId: 'plant'),
+    _ScienceItem(id: 'corn', label: 'Corn', emoji: '🌽', categoryId: 'plant'),
   ];
 
   static const List<_ScienceCategory> _foodCategories = [
@@ -121,8 +130,11 @@ class _GradeScienceGamesScreenState extends State<GradeScienceGamesScreen>
   bool _introDismissed = false;
   DateTime? _sessionStart;
   int _correctCount = 0;
+  int _firstTryCorrect = 0;
+  bool _hadWrongDropSinceLastPlace = false;
   int _attempts = 0;
   int _earnedStars = 3;
+  int _finalScore = 0;
   bool _gameComplete = false;
 
   String? _flashGreenId;
@@ -163,6 +175,7 @@ class _GradeScienceGamesScreenState extends State<GradeScienceGamesScreen>
       _placedByCategory[c.id] = [];
     }
     _roundItemCount = _itemsPool.length;
+    _hadWrongDropSinceLastPlace = false;
   }
 
   @override
@@ -273,6 +286,7 @@ class _GradeScienceGamesScreenState extends State<GradeScienceGamesScreen>
     }
     _lastWrongFeedbackAt = now;
     _attempts++;
+    _hadWrongDropSinceLastPlace = true;
     HapticFeedback.lightImpact();
     SystemSound.play(SystemSoundType.alert);
     setState(() => _flashRedId = categoryId);
@@ -286,6 +300,7 @@ class _GradeScienceGamesScreenState extends State<GradeScienceGamesScreen>
     if (item == null) return;
     if (!_itemsPool.any((e) => e.id == itemId)) return;
 
+    final firstTryPlace = !_hadWrongDropSinceLastPlace;
     _attempts++;
     HapticFeedback.mediumImpact();
     SystemSound.play(SystemSoundType.click);
@@ -295,6 +310,10 @@ class _GradeScienceGamesScreenState extends State<GradeScienceGamesScreen>
       _placedByCategory[categoryId]!.add(item);
       _correctCount++;
     });
+    if (firstTryPlace) {
+      _firstTryCorrect++;
+    }
+    _hadWrongDropSinceLastPlace = false;
     if (widget.kind == ScienceGameKind.plants) {
       await _leafPulseController.forward(from: 0);
     }
@@ -308,26 +327,25 @@ class _GradeScienceGamesScreenState extends State<GradeScienceGamesScreen>
 
   void _finishGame() {
     final timeSpent = _sessionStart != null ? DateTime.now().difference(_sessionStart!) : null;
-    final accuracy = _attempts > 0 ? (_correctCount / _attempts).clamp(0.0, 1.0) : 1.0;
     final total = _roundItemCount > 0 ? _roundItemCount : 1;
-    final score = ((_correctCount / total) * 70 + accuracy * 30).round().clamp(0, 100);
-    var stars = 1;
-    if (score >= 85) {
-      stars = 3;
-    } else if (score >= 60) {
-      stars = 2;
-    }
+    final r = scoreAndStarsProgressAccuracy(
+      progressed: _correctCount,
+      total: total,
+      successCount: _correctCount,
+      attemptCount: _attempts,
+    );
     if (!mounted) return;
     context.read<AppState>().completeGame(
           widget.grade,
           widget.gameId,
-          score: score,
-          stars: stars,
+          score: r.score,
+          stars: r.stars,
           timeSpent: timeSpent,
         );
     if (!mounted) return;
     setState(() {
-      _earnedStars = stars;
+      _earnedStars = r.stars;
+      _finalScore = r.score;
       _gameComplete = true;
     });
   }
@@ -335,7 +353,10 @@ class _GradeScienceGamesScreenState extends State<GradeScienceGamesScreen>
   void _replay() {
     setState(() {
       _gameComplete = false;
+      _finalScore = 0;
       _correctCount = 0;
+      _firstTryCorrect = 0;
+      _hadWrongDropSinceLastPlace = false;
       _attempts = 0;
       _sessionStart = DateTime.now();
       _initRound();
@@ -371,14 +392,18 @@ class _GradeScienceGamesScreenState extends State<GradeScienceGamesScreen>
   @override
   Widget build(BuildContext context) {
     if (_gameComplete) {
-      return _ScienceEndScreen(
-        kind: widget.kind,
-        stars: _earnedStars,
-        correct: _correctCount,
-        attempts: _attempts,
-        timeSpent: _sessionStart != null ? DateTime.now().difference(_sessionStart!) : Duration.zero,
-        onReplay: _replay,
-        onHome: _goHome,
+      return PostGamePraiseGate(
+        child: _ScienceEndScreen(
+          kind: widget.kind,
+          stars: _earnedStars,
+          score: _finalScore,
+          firstTryCorrect: _firstTryCorrect,
+          totalItems: _roundItemCount > 0 ? _roundItemCount : 1,
+          attempts: _attempts,
+          timeSpent: _sessionStart != null ? DateTime.now().difference(_sessionStart!) : Duration.zero,
+          onReplay: _replay,
+          onHome: _goHome,
+        ),
       );
     }
 
@@ -417,22 +442,8 @@ class _GradeScienceGamesScreenState extends State<GradeScienceGamesScreen>
                   const SizedBox(height: 12),
                   if (widget.kind == ScienceGameKind.food)
                     Expanded(child: _buildFoodLayout())
-                  else ...[
-                    Expanded(
-                      child: AnimatedBuilder(
-                        animation: _leafPulseController,
-                        builder: (context, child) {
-                          return Transform.scale(
-                            scale: widget.kind == ScienceGameKind.plants ? _leafScale.value : 1.0,
-                            child: child,
-                          );
-                        },
-                        child: _buildDraggableGrid(),
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    _buildCategoryRow(),
-                  ],
+                  else
+                    Expanded(child: _buildPlantsOrMatterLayout()),
                 ],
               ),
             ),
@@ -525,30 +536,74 @@ class _GradeScienceGamesScreenState extends State<GradeScienceGamesScreen>
     );
   }
 
-  Widget _buildCategoryRow() {
-    return SizedBox(
-      height: widget.kind == ScienceGameKind.matter ? 108 : 96,
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: _categories.map((c) {
-          return Expanded(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 4),
-              child: _CategoryDropBox(
-                category: c,
-                placed: _placedByCategory[c.id] ?? [],
-                flashGreen: _flashGreenId == c.id,
-                flashRed: _flashRedId == c.id,
-                vertical: false,
-                matterFx: widget.kind == ScienceGameKind.matter,
-                willAcceptItem: (itemId) => _matchesCategory(itemId, c.id),
-                onWrongAttempt: _onWrongTarget,
-                onCorrectDrop: (itemId) => _onCorrectDrop(c.id, itemId),
-              ),
+  /// Draggable pool + category targets (no outer scroll — grid shares height).
+  Widget _buildPlantsOrMatterLayout() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Expanded(
+          flex: 10,
+          child: AnimatedBuilder(
+            animation: _leafPulseController,
+            builder: (context, child) {
+              return Transform.scale(
+                scale: widget.kind == ScienceGameKind.plants ? _leafScale.value : 1.0,
+                child: child,
+              );
+            },
+            child: _buildDraggableGrid(),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Expanded(
+          flex: 15,
+          child: _buildCategoryDropBars(),
+        ),
+      ],
+    );
+  }
+
+  Widget _categoryDropCell(int index) {
+    final c = _categories[index];
+    return _CategoryDropBox(
+      category: c,
+      placed: _placedByCategory[c.id] ?? [],
+      flashGreen: _flashGreenId == c.id,
+      flashRed: _flashRedId == c.id,
+      vertical: true,
+      matterFx: widget.kind == ScienceGameKind.matter,
+      willAcceptItem: (itemId) => _matchesCategory(itemId, c.id),
+      onWrongAttempt: _onWrongTarget,
+      onCorrectDrop: (itemId) => _onCorrectDrop(c.id, itemId),
+    );
+  }
+
+  /// Fills available height: single centered column, equal-height slots — no scrolling.
+  Widget _buildCategoryDropBars() {
+    const gap = 8.0;
+    final n = _categories.length;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final maxH = constraints.maxHeight;
+        final maxW = constraints.maxWidth;
+        final contentW = (maxW * 0.82).clamp(280.0, 400.0);
+
+        return Center(
+          child: SizedBox(
+            width: contentW,
+            height: maxH,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                for (var i = 0; i < n; i++) ...[
+                  if (i > 0) const SizedBox(height: gap),
+                  Expanded(child: _categoryDropCell(i)),
+                ],
+              ],
             ),
-          );
-        }).toList(),
-      ),
+          ),
+        );
+      },
     );
   }
 }
@@ -681,6 +736,42 @@ class _DraggablePlantCard extends StatelessWidget {
   }
 }
 
+class _SciencePlacedChip extends StatelessWidget {
+  final _ScienceItem item;
+
+  const _SciencePlacedChip({required this.item});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.grey.shade300.withValues(alpha: 0.85)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(item.emoji, style: const TextStyle(fontSize: 22)),
+          const SizedBox(width: 6),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 112),
+            child: Text(
+              item.label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: AppTypography.body(fontSize: 12, color: AppColors.heading),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Drop zone for **Plants Around Us**, **Food Match**, and **States of Matter** (same widget).
+/// Drag feedback is neutral while hovering; correct vs wrong is decided only in [onAcceptWithDetails].
 class _CategoryDropBox extends StatelessWidget {
   final _ScienceCategory category;
   final List<_ScienceItem> placed;
@@ -717,33 +808,45 @@ class _CategoryDropBox extends StatelessWidget {
     }
 
     return DragTarget<String>(
-      onWillAcceptWithDetails: (details) {
-        final ok = willAcceptItem(details.data);
-        if (!ok) {
+      // Always accept here so we only evaluate correct/wrong on release (onAccept).
+      // If we returned false while hovering wrong zones, Flutter would still leak hints
+      // via candidateData on the one "true" target (blue border = answer).
+      onWillAcceptWithDetails: (_) => true,
+      onAcceptWithDetails: (details) {
+        final id = details.data;
+        if (willAcceptItem(id)) {
+          onCorrectDrop(id);
+        } else {
           onWrongAttempt(category.id);
         }
-        return ok;
       },
-      onAcceptWithDetails: (details) => onCorrectDrop(details.data),
       builder: (context, candidateData, rejectedData) {
         final hovering = candidateData.isNotEmpty;
-        return AnimatedContainer(
-          duration: const Duration(milliseconds: 200),
-          decoration: BoxDecoration(
-            color: bg,
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: hovering ? AppColors.primaryBlue.withValues(alpha: 0.55) : border, width: hovering ? 2.2 : 1.5),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.06),
-                blurRadius: 8,
-                offset: const Offset(0, 2),
+        const radius = 14.0;
+        // Same neutral hover on every category — does not signal right vs wrong.
+        final hoverBorder = Colors.blueGrey.withValues(alpha: 0.42);
+        return ClipRRect(
+          borderRadius: BorderRadius.circular(radius),
+          clipBehavior: Clip.antiAlias,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 200),
+            decoration: BoxDecoration(
+              color: bg,
+              borderRadius: BorderRadius.circular(radius),
+              border: Border.all(
+                color: hovering ? hoverBorder : border,
+                width: hovering ? 2.0 : 1.5,
               ),
-            ],
-          ),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(12),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.06),
+                  blurRadius: 8,
+                  offset: const Offset(0, 2),
+                ),
+              ],
+            ),
             child: Stack(
+              clipBehavior: Clip.hardEdge,
               children: [
                 if (matterFx && category.id == 'liquid')
                   Positioned.fill(
@@ -774,40 +877,59 @@ class _CategoryDropBox extends StatelessWidget {
                     ),
                   ),
                 Padding(
-                  padding: const EdgeInsets.all(8),
+                  padding: EdgeInsets.all(vertical ? 6 : 8),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      Text(
-                        category.label,
-                        textAlign: TextAlign.center,
-                        style: AppTypography.cardTitle(fontSize: vertical ? 15 : 13),
-                      ),
-                      const SizedBox(height: 6),
+                      if (vertical)
+                        Center(
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(20),
+                              border: Border.all(color: Colors.grey.shade300.withValues(alpha: 0.55)),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black.withValues(alpha: 0.05),
+                                  blurRadius: 2,
+                                  offset: const Offset(0, 1),
+                                ),
+                              ],
+                            ),
+                            child: Text(
+                              category.label,
+                              textAlign: TextAlign.center,
+                              style: AppTypography.cardTitle(fontSize: 13, color: AppColors.heading),
+                            ),
+                          ),
+                        )
+                      else
+                        Text(
+                          category.label,
+                          textAlign: TextAlign.center,
+                          style: AppTypography.cardTitle(fontSize: 13),
+                        ),
+                      SizedBox(height: vertical ? 4 : 6),
                       Expanded(
                         child: placed.isEmpty
                             ? Center(
-                                child: Icon(Icons.touch_app_rounded, color: Colors.grey.shade400, size: vertical ? 28 : 22),
+                                child: vertical
+                                    ? Text(
+                                        'Drop here',
+                                        style: AppTypography.body(fontSize: 12, color: Colors.grey.shade500),
+                                      )
+                                    : Icon(Icons.touch_app_rounded, color: Colors.grey.shade400, size: 22),
                               )
                             : vertical
-                                ? ListView(
-                                    shrinkWrap: true,
-                                    children: placed
-                                        .map(
-                                          (e) => Padding(
-                                            padding: const EdgeInsets.only(bottom: 6),
-                                            child: Row(
-                                              children: [
-                                                Text(e.emoji, style: const TextStyle(fontSize: 22)),
-                                                const SizedBox(width: 8),
-                                                Expanded(
-                                                  child: Text(e.label, style: AppTypography.body(fontSize: 13)),
-                                                ),
-                                              ],
-                                            ),
-                                          ),
-                                        )
-                                        .toList(),
+                                ? Center(
+                                    child: Wrap(
+                                      alignment: WrapAlignment.center,
+                                      crossAxisAlignment: WrapCrossAlignment.center,
+                                      spacing: 6,
+                                      runSpacing: 6,
+                                      children: placed.map((e) => _SciencePlacedChip(item: e)).toList(),
+                                    ),
                                   )
                                 : Wrap(
                                     alignment: WrapAlignment.center,
@@ -841,16 +963,21 @@ class _CategoryDropBox extends StatelessWidget {
 class _ScienceEndScreen extends StatelessWidget {
   final ScienceGameKind kind;
   final int stars;
-  final int correct;
+  final int score;
+  final int firstTryCorrect;
+  final int totalItems;
   final int attempts;
   final Duration timeSpent;
   final VoidCallback onReplay;
   final VoidCallback onHome;
 
-  const _ScienceEndScreen({
+  // ignore: prefer_const_constructors_in_immutables — non-const avoids hot-reload failures when fields change
+  _ScienceEndScreen({
     required this.kind,
     required this.stars,
-    required this.correct,
+    required this.score,
+    required this.firstTryCorrect,
+    required this.totalItems,
     required this.attempts,
     required this.timeSpent,
     required this.onReplay,
@@ -924,9 +1051,23 @@ class _ScienceEndScreen extends StatelessWidget {
                   ),
                 ),
               ),
-              const SizedBox(height: 20),
+              const SizedBox(height: 8),
               Text(
-                'Correct: $correct · Attempts: $attempts · Time: ${mins}m ${secs}s',
+                'Score: $score / 100',
+                textAlign: TextAlign.center,
+                style: AppTypography.body(fontSize: 15, color: AppColors.bodyText),
+              ),
+              if (kind != ScienceGameKind.plants) ...[
+                const SizedBox(height: 10),
+                Text(
+                  'First try: $firstTryCorrect / $totalItems',
+                  textAlign: TextAlign.center,
+                  style: AppTypography.cardTitle(fontSize: 20, color: AppColors.heading),
+                ),
+              ],
+              const SizedBox(height: 8),
+              Text(
+                'Total attempts: $attempts · Time: ${mins}m ${secs}s',
                 textAlign: TextAlign.center,
                 style: AppTypography.body(fontSize: 14, height: 1.4),
               ),
@@ -941,7 +1082,7 @@ class _ScienceEndScreen extends StatelessWidget {
                     foregroundColor: Colors.white,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                   ),
-                  child: Text('Replay', style: AppTypography.cardTitle(fontSize: 16).copyWith(color: Colors.white)),
+                  child: Text('Try again', style: AppTypography.cardTitle(fontSize: 16).copyWith(color: Colors.white)),
                 ),
               ),
               const SizedBox(height: 12),

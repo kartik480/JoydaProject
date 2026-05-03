@@ -2,6 +2,8 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import '../../core/app_colors.dart';
 import '../../core/app_typography.dart';
+import '../../core/game_scoring.dart';
+import '../../widgets/post_game_praise_gate.dart';
 
 class FloatSinkGameScreen extends StatefulWidget {
   const FloatSinkGameScreen({super.key});
@@ -38,6 +40,10 @@ class _FloatSinkGameScreenState extends State<FloatSinkGameScreen> with TickerPr
   int _score = 0;
   int _totalPlaced = 0;
   bool _gameCompleted = false;
+  int _optionTapCount = 0;
+  int _correctOptionTapCount = 0;
+  int _firstTryCorrect = 0;
+  int _tapsThisObject = 0;
   
   late AnimationController _splashController;
   late AnimationController _successController;
@@ -45,7 +51,6 @@ class _FloatSinkGameScreenState extends State<FloatSinkGameScreen> with TickerPr
   final Map<String, AnimationController> _sinkControllers = {};
   final Map<String, AnimationController> _scaleControllers = {};
   final Map<String, AnimationController> _dropControllers = {};
-  String? _lastDroppedObject;
   
   // Track drag position for showing options
   String? _draggingObjectId;
@@ -141,7 +146,6 @@ class _FloatSinkGameScreenState extends State<FloatSinkGameScreen> with TickerPr
     setState(() {
       _objectPositions[objectId] = position;
       _objectPlaced[objectId] = true;
-      _lastDroppedObject = objectId;
       _showFloatSinkOptions = false;
       _draggingObjectId = null;
       _frozenObjectId = null;
@@ -222,14 +226,18 @@ class _FloatSinkGameScreenState extends State<FloatSinkGameScreen> with TickerPr
   }
   
   void _onOptionSelected(String objectId, bool floatChoice) {
+    if (_gameCompleted) return;
     final object = _objects.firstWhere((o) => o.id == objectId);
     final isCorrect = (floatChoice && !object.sinks) || (!floatChoice && object.sinks);
+
+    _tapsThisObject++;
+    _optionTapCount++;
 
     if (!isCorrect) {
       setState(() {
         _showingFeedback = true;
         _lastAnswerCorrect = false;
-        _feedbackMessage = 'Try again';
+        _feedbackMessage = 'Wrong!';
         _showFloatSinkOptions = false;
       });
       Future.delayed(const Duration(milliseconds: 1500), () {
@@ -238,13 +246,30 @@ class _FloatSinkGameScreenState extends State<FloatSinkGameScreen> with TickerPr
           _showingFeedback = false;
           _feedbackMessage = null;
           _lastAnswerCorrect = null;
-          _showFloatSinkOptions = true;
-          _frozenObjectId = objectId;
-          _draggingObjectId = objectId;
         });
+        _onObjectDropped(objectId, const Offset(0, 0), true, floatChoice: floatChoice);
+        if (_currentObjectIndex < _objects.length - 1) {
+          setState(() {
+            _currentObjectIndex++;
+          });
+          _showNextObject();
+        } else {
+          Future.delayed(const Duration(milliseconds: 500), () {
+            if (mounted) {
+              setState(() {
+                _gameCompleted = true;
+              });
+            }
+          });
+        }
       });
       return;
     }
+
+    if (_tapsThisObject == 1) {
+      _firstTryCorrect++;
+    }
+    _correctOptionTapCount++;
 
     setState(() {
       _showingFeedback = true;
@@ -281,6 +306,7 @@ class _FloatSinkGameScreenState extends State<FloatSinkGameScreen> with TickerPr
   void _showNextObject() {
     if (_currentObjectIndex < _objects.length) {
       setState(() {
+        _tapsThisObject = 0;
         final object = _objects[_currentObjectIndex];
         _frozenObjectId = object.id;
         _showFloatSinkOptions = true;
@@ -304,7 +330,10 @@ class _FloatSinkGameScreenState extends State<FloatSinkGameScreen> with TickerPr
       _score = 0;
       _totalPlaced = 0;
       _gameCompleted = false;
-      _lastDroppedObject = null;
+      _optionTapCount = 0;
+      _correctOptionTapCount = 0;
+      _firstTryCorrect = 0;
+      _tapsThisObject = 0;
       _showFloatSinkOptions = false;
       _draggingObjectId = null;
       _pendingFloatChoice = null;
@@ -325,7 +354,7 @@ class _FloatSinkGameScreenState extends State<FloatSinkGameScreen> with TickerPr
   @override
   Widget build(BuildContext context) {
     if (_gameCompleted) {
-      return _buildCompletionScreen();
+      return PostGamePraiseGate(child: _buildCompletionScreen());
     }
 
     return Scaffold(
@@ -341,17 +370,6 @@ class _FloatSinkGameScreenState extends State<FloatSinkGameScreen> with TickerPr
           'Float or Sink?',
           style: AppTypography.cardTitle(fontSize: 18),
         ),
-        actions: [
-          Padding(
-            padding: const EdgeInsets.only(right: 16),
-            child: Center(
-              child: Text(
-                'Score: $_score',
-                style: AppTypography.cardTitle(fontSize: 16, color: AppColors.primaryBlue),
-              ),
-            ),
-          ),
-        ],
       ),
       body: SafeArea(
         child: Column(
@@ -394,7 +412,6 @@ class _FloatSinkGameScreenState extends State<FloatSinkGameScreen> with TickerPr
                 },
               ),
             ),
-            _buildFeedback(),
           ],
         ),
       ),
@@ -946,10 +963,7 @@ class _FloatSinkGameScreenState extends State<FloatSinkGameScreen> with TickerPr
   
   Widget _buildFeedbackBoard() {
     final isCorrect = _lastAnswerCorrect ?? false;
-    final isRetry = !isCorrect && _feedbackMessage == 'Try again';
-    final accent = isCorrect
-        ? AppColors.freshGreen
-        : (isRetry ? const Color(0xFFFF9800) : Colors.red);
+    final accent = isCorrect ? AppColors.freshGreen : Colors.red;
     return Center(
       child: Container(
         constraints: const BoxConstraints(maxWidth: 300),
@@ -975,7 +989,7 @@ class _FloatSinkGameScreenState extends State<FloatSinkGameScreen> with TickerPr
             Icon(
               isCorrect
                   ? Icons.check_circle_rounded
-                  : (isRetry ? Icons.touch_app_rounded : Icons.cancel_rounded),
+                  : Icons.cancel_rounded,
               color: accent,
               size: 60,
             ),
@@ -994,50 +1008,14 @@ class _FloatSinkGameScreenState extends State<FloatSinkGameScreen> with TickerPr
     );
   }
 
-  Widget _buildFeedback() {
-    if (_lastDroppedObject == null) return const SizedBox.shrink();
-    
-    final object = _objects.firstWhere((o) => o.id == _lastDroppedObject);
-    final isCorrect = _objectCorrect[_lastDroppedObject!]!;
-    
-    return AnimatedBuilder(
-      animation: isCorrect ? _successController : _splashController,
-      builder: (context, child) {
-        return Container(
-          padding: const EdgeInsets.all(16),
-          margin: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(
-              color: isCorrect ? AppColors.freshGreen : Colors.red,
-              width: 2,
-            ),
-          ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(
-                isCorrect ? Icons.check_circle : Icons.cancel,
-                color: isCorrect ? AppColors.freshGreen : Colors.red,
-                size: 24,
-              ),
-              const SizedBox(width: 12),
-              Text(
-                '${object.name} ${object.sinks ? "sinks" : "floats"}!',
-                style: AppTypography.cardTitle(
-                  fontSize: 16,
-                  color: AppColors.freshGreen,
-                ),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
   Widget _buildCompletionScreen() {
+    final completed = (_score ~/ 20).clamp(0, _objects.length);
+    final r = scoreAndStarsProgressAccuracy(
+      progressed: completed,
+      total: _objects.length,
+      successCount: _correctOptionTapCount,
+      attemptCount: _optionTapCount > 0 ? _optionTapCount : 1,
+    );
     return Scaffold(
       backgroundColor: AppColors.backgroundMain,
       body: SafeArea(
@@ -1063,29 +1041,36 @@ class _FloatSinkGameScreenState extends State<FloatSinkGameScreen> with TickerPr
                   textAlign: TextAlign.center,
                   style: AppTypography.body(fontSize: 16),
                 ),
-                const SizedBox(height: 24),
-                Container(
-                  padding: const EdgeInsets.all(20),
-                  decoration: BoxDecoration(
-                    color: AppColors.backgroundCard,
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(color: Colors.grey.shade200),
-                  ),
-                  child: Column(
-                    children: [
-                      Text(
-                        'Final Score',
-                        style: AppTypography.body(fontSize: 14),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        '$_score',
-                        style: AppTypography.screenTitle(fontSize: 32, color: AppColors.primaryBlue),
-                      ),
-                    ],
+                const SizedBox(height: 20),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: List.generate(
+                    3,
+                    (i) => Icon(
+                      Icons.star_rounded,
+                      color: i < r.stars ? AppColors.warmYellow : Colors.grey.shade300,
+                      size: 40,
+                    ),
                   ),
                 ),
-                const SizedBox(height: 48),
+                const SizedBox(height: 12),
+                Text(
+                  'Score: ${r.score} / 100',
+                  style: AppTypography.cardTitle(fontSize: 18, color: AppColors.primaryBlue),
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  'First try: $_firstTryCorrect / ${_objects.length}',
+                  textAlign: TextAlign.center,
+                  style: AppTypography.cardTitle(fontSize: 18, color: AppColors.heading),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Points: $_score · Objects placed: $completed / ${_objects.length} · Total picks: $_optionTapCount',
+                  textAlign: TextAlign.center,
+                  style: AppTypography.body(fontSize: 14),
+                ),
+                const SizedBox(height: 40),
                 Row(
                   children: [
                     Expanded(
@@ -1098,7 +1083,7 @@ class _FloatSinkGameScreenState extends State<FloatSinkGameScreen> with TickerPr
                           ),
                         ),
                         child: Text(
-                          'Play Again',
+                          'Try again',
                           style: AppTypography.cardTitle(fontSize: 16),
                         ),
                       ),

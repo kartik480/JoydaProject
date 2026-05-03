@@ -3,7 +3,8 @@ import '../core/app_colors.dart';
 import '../core/app_responsive.dart';
 import '../core/app_typography.dart';
 import '../widgets/onboarding_illustration.dart';
-import 'auth/enter_email_mobile_screen.dart';
+import 'auth/login_screen.dart';
+import 'auth/signup_screen.dart';
 
 /// Welcome Screen: fulllogo.png only in top panel, then icons panel, Login & Sign Up.
 class WelcomeScreen extends StatelessWidget {
@@ -62,7 +63,7 @@ class WelcomeScreen extends StatelessWidget {
                             width: double.infinity,
                             height: 52,
                             child: FilledButton(
-                              onPressed: () => _goToAuth(context, isEmail: true),
+                              onPressed: () => _goToLogin(context),
                               style: FilledButton.styleFrom(
                                 backgroundColor: AppColors.primaryBlue,
                                 foregroundColor: Colors.white,
@@ -83,7 +84,7 @@ class WelcomeScreen extends StatelessWidget {
                             width: double.infinity,
                             height: 52,
                             child: OutlinedButton(
-                              onPressed: () => _goToAuth(context, isEmail: false),
+                              onPressed: () => _goToSignup(context),
                               style: OutlinedButton.styleFrom(
                                 backgroundColor: Colors.white,
                                 foregroundColor: AppColors.primaryBlue,
@@ -117,11 +118,15 @@ class WelcomeScreen extends StatelessWidget {
     );
   }
 
-  void _goToAuth(BuildContext context, {required bool isEmail}) {
+  void _goToLogin(BuildContext context) {
     Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (context) => EnterEmailMobileScreen(initialModeEmail: isEmail),
-      ),
+      MaterialPageRoute<void>(builder: (context) => const LoginScreen()),
+    );
+  }
+
+  void _goToSignup(BuildContext context) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (context) => const SignupScreen()),
     );
   }
 }

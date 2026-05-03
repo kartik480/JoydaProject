@@ -9,7 +9,10 @@ import 'package:provider/provider.dart';
 
 import '../../core/app_colors.dart';
 import '../../core/app_typography.dart';
+import '../../core/joyda_tts_config.dart';
 import '../../core/app_state.dart';
+import '../../core/game_scoring.dart';
+import '../../widgets/post_game_praise_gate.dart';
 
 /// Unique word chip (handles repeated words like "the").
 class _WordToken {
@@ -29,7 +32,7 @@ class _SentenceLevel {
 
 enum _FeedbackOverlay { none, wrongSentence, rightSentence }
 
-/// UKG/LKG: drag jumbled words into slots to build correct sentences.
+/// Grade 4–5: drag jumbled words into slots to build correct sentences.
 class SentenceBuilderGameScreen extends StatefulWidget {
   final Grade grade;
   final String gameId;
@@ -66,6 +69,7 @@ class _SentenceBuilderGameScreenState extends State<SentenceBuilderGameScreen>
   bool _introDismissed = false;
   DateTime? _sessionStart;
   int _earnedStars = 3;
+  int _finalScore = 0;
 
   int _levelIndex = 0;
   List<_WordToken?> _slots = [];
@@ -77,6 +81,8 @@ class _SentenceBuilderGameScreenState extends State<SentenceBuilderGameScreen>
   _FeedbackOverlay _overlay = _FeedbackOverlay.none;
 
   int _correctSentences = 0;
+  int _firstTrySentences = 0;
+  bool _hadWrongSubmitThisLevel = false;
   int _checkAttempts = 0;
   int _dragEpoch = 0;
 
@@ -101,11 +107,12 @@ class _SentenceBuilderGameScreenState extends State<SentenceBuilderGameScreen>
 
   Future<void> _initTts() async {
     try {
-      await _tts.awaitSpeakCompletion(true);
-      await _tts.setLanguage('en-US');
-      await _tts.setSpeechRate(0.48);
-      await _tts.setPitch(1.05);
-      await _tts.setVolume(1.0);
+      await JoydaTtsConfig.configureNarration(
+        _tts,
+        awaitSpeakCompletion: true,
+        speechRate: 0.48,
+        pitch: 1.05,
+      );
     } catch (_) {
       // TTS may still work on some platforms after a failed init step.
     } finally {
@@ -117,9 +124,11 @@ class _SentenceBuilderGameScreenState extends State<SentenceBuilderGameScreen>
 
   Future<void> _speak(String text) async {
     if (text.isEmpty) return;
+    final spoken = JoydaTtsConfig.casualNarration(text);
+    if (spoken.isEmpty) return;
     try {
       await _tts.stop();
-      await _tts.speak(text).timeout(_ttsSafetyTimeout, onTimeout: () {});
+      await _tts.speak(spoken).timeout(_ttsSafetyTimeout, onTimeout: () {});
     } catch (_) {}
   }
 
@@ -148,9 +157,9 @@ class _SentenceBuilderGameScreenState extends State<SentenceBuilderGameScreen>
                 ),
                 const SizedBox(height: 10),
                 Text(
-                  'Put the words in the right order',
+                  'When every slot is filled, tap Submit sentence — same step whether you are right or still fixing the order.',
                   textAlign: TextAlign.center,
-                  style: AppTypography.body(fontSize: 15, color: AppColors.bodyText),
+                  style: AppTypography.body(fontSize: 15, color: AppColors.bodyText, height: 1.35),
                 ),
                 const SizedBox(height: 16),
                 Container(
@@ -166,7 +175,7 @@ class _SentenceBuilderGameScreenState extends State<SentenceBuilderGameScreen>
                       const SizedBox(width: 10),
                       Expanded(
                         child: Text(
-                          'Drag words into slots',
+                          'Drag words into slots, then submit',
                           style: AppTypography.body(fontSize: 15, color: AppColors.heading),
                         ),
                       ),
@@ -211,7 +220,9 @@ class _SentenceBuilderGameScreenState extends State<SentenceBuilderGameScreen>
     try {
       await _tts.setVolume(1.0);
       if (kIsWeb) {
-        await _tts.speak('Let\'s build sentences!').timeout(_ttsSafetyTimeout, onTimeout: () {});
+        await _tts
+            .speak(JoydaTtsConfig.casualNarration('Let\'s build sentences!'))
+            .timeout(_ttsSafetyTimeout, onTimeout: () {});
       }
     } catch (_) {}
   }
@@ -230,6 +241,7 @@ class _SentenceBuilderGameScreenState extends State<SentenceBuilderGameScreen>
       _sentenceLocked = false;
       _allCorrect = false;
       _overlay = _FeedbackOverlay.none;
+      _hadWrongSubmitThisLevel = false;
     });
   }
 
@@ -255,10 +267,6 @@ class _SentenceBuilderGameScreenState extends State<SentenceBuilderGameScreen>
   Future<void> _onWordDroppedOnSlot(_WordToken token, int slotIndex) async {
     if (_sentenceLocked || _feedbackBlocking) return;
     _placeInSlot(token, slotIndex);
-    if (_allSlotsFilled && _orderIsCorrect()) {
-      await _runSentenceSuccess();
-      return;
-    }
     HapticFeedback.lightImpact();
     SystemSound.play(SystemSoundType.click);
   }
@@ -317,78 +325,87 @@ class _SentenceBuilderGameScreenState extends State<SentenceBuilderGameScreen>
     return true;
   }
 
-  /// After a wrong answer: clear sentence slots and put all words in the bank (shuffled)
-  /// so each chip is ready to drag into a slot again.
-  void _collectWordsIntoBankForRetry() {
-    final level = _levels[_levelIndex];
-    final byId = <String, _WordToken>{};
-    for (final t in _slots) {
-      if (t != null) byId[t.id] = t;
-    }
-    for (final t in _bank) {
-      byId[t.id] = t;
-    }
-    final collected = byId.values.toList();
-    if (collected.length != level.length) {
-      _loadLevel(_levelIndex);
-      return;
-    }
-    collected.shuffle(_rng);
-    setState(() {
-      _slots = List<_WordToken?>.filled(level.length, null);
-      _bank = collected;
-      _dragEpoch++;
-    });
-  }
-
   Future<void> _onCheckSentence() async {
     if (!_allSlotsFilled || _sentenceLocked || _feedbackBlocking) return;
     if (_orderIsCorrect()) {
+      if (!_hadWrongSubmitThisLevel) {
+        _firstTrySentences++;
+      }
       await _runSentenceSuccess();
       return;
     }
     _checkAttempts++;
+    _hadWrongSubmitThisLevel = true;
     HapticFeedback.heavyImpact();
     SystemSound.play(SystemSoundType.alert);
     setState(() => _overlay = _FeedbackOverlay.wrongSentence);
-    await _ttsEngineReady.future;
+    unawaited(_shakeController.forward(from: 0));
+    unawaited(_runWrongSentenceAutoDismiss());
+  }
+
+  Future<void> _runWrongSentenceAutoDismiss() async {
+    await _speak('Oops, not quite right. Let us try the next sentence.');
     if (!mounted) return;
-    await Future.wait([
-      _shakeController.forward(from: 0),
-      _speak(
-        'Oops, not quite right. Try again. Put the words in the correct order.',
-      ),
-    ]);
-    await Future<void>.delayed(const Duration(milliseconds: 250));
+    await Future<void>.delayed(const Duration(milliseconds: 300));
     if (!mounted) return;
+    _dismissWrongSentenceFeedback();
+  }
+
+  void _dismissWrongSentenceFeedback() {
+    HapticFeedback.lightImpact();
+    if (!mounted) return;
+    _tts.stop();
+    _shakeController.reset();
     setState(() => _overlay = _FeedbackOverlay.none);
-    _collectWordsIntoBankForRetry();
+    if (_levelIndex + 1 >= _levels.length) {
+      _finishGame();
+    } else {
+      _loadLevel(_levelIndex + 1);
+    }
   }
 
   void _finishGame() {
     final timeSpent = _sessionStart != null ? DateTime.now().difference(_sessionStart!) : null;
     final total = _levels.length;
-    final accuracy = _checkAttempts > 0 ? (_correctSentences / _checkAttempts).clamp(0.0, 1.0) : 1.0;
-    final score = ((_correctSentences / total) * 70 + accuracy * 30).round().clamp(0, 100);
-    var stars = 1;
-    if (score >= 85) {
-      stars = 3;
-    } else if (score >= 60) {
-      stars = 2;
-    }
+    final r = scoreAndStarsProgressAccuracy(
+      progressed: _correctSentences,
+      total: total,
+      successCount: _correctSentences,
+      attemptCount: _checkAttempts,
+    );
     if (!mounted) return;
     context.read<AppState>().completeGame(
           widget.grade,
           widget.gameId,
-          score: score,
-          stars: stars,
+          score: r.score,
+          stars: r.stars,
           timeSpent: timeSpent,
         );
     if (!mounted) return;
     setState(() {
-      _earnedStars = stars;
+      _earnedStars = r.stars;
+      _finalScore = r.score;
       _gameComplete = true;
     });
+  }
+
+  void _replay() {
+    _tts.stop();
+    setState(() {
+      _gameComplete = false;
+      _earnedStars = 3;
+      _finalScore = 0;
+      _correctSentences = 0;
+      _firstTrySentences = 0;
+      _hadWrongSubmitThisLevel = false;
+      _checkAttempts = 0;
+      _overlay = _FeedbackOverlay.none;
+      _sentenceLocked = false;
+      _allCorrect = false;
+      _sessionStart = DateTime.now();
+    });
+    context.read<AppState>().startGame(widget.grade, widget.gameId);
+    _loadLevel(0);
   }
 
   void _goHome() {
@@ -409,13 +426,17 @@ class _SentenceBuilderGameScreenState extends State<SentenceBuilderGameScreen>
   @override
   Widget build(BuildContext context) {
     if (_gameComplete) {
-      return _StoryCompleteScreen(
-        stars: _earnedStars,
-        correctSentences: _correctSentences,
-        totalSentences: _levels.length,
-        attempts: _checkAttempts,
-        timeSpent: _sessionStart != null ? DateTime.now().difference(_sessionStart!) : Duration.zero,
-        onHome: _goHome,
+      return PostGamePraiseGate(
+        child: _StoryCompleteScreen(
+          stars: _earnedStars,
+          score: _finalScore,
+          firstTrySentences: _firstTrySentences,
+          totalSentences: _levels.length,
+          attempts: _checkAttempts,
+          timeSpent: _sessionStart != null ? DateTime.now().difference(_sessionStart!) : Duration.zero,
+          onReplay: _replay,
+          onHome: _goHome,
+        ),
       );
     }
 
@@ -456,7 +477,7 @@ class _SentenceBuilderGameScreenState extends State<SentenceBuilderGameScreen>
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   Text(
-                    'Arrange the words to form a correct sentence',
+                    'Fill every slot, then tap Submit sentence to check your order.',
                     textAlign: TextAlign.center,
                     style: AppTypography.body(fontSize: 15, color: AppColors.heading, height: 1.35),
                   ),
@@ -491,98 +512,91 @@ class _SentenceBuilderGameScreenState extends State<SentenceBuilderGameScreen>
             Expanded(
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Text(
-                      'Your sentence',
-                      style: AppTypography.cardTitle(fontSize: 16),
-                    ),
-                    const SizedBox(height: 10),
-                    AnimatedBuilder(
-                      animation: _shakeAnim,
-                      builder: (context, child) {
-                        return Transform.translate(
-                          offset: Offset(_shakeAnim.value, 0),
-                          child: child,
-                        );
-                      },
-                      child: SingleChildScrollView(
-                        scrollDirection: Axis.horizontal,
-                        child: Row(
-                          children: [
-                            for (var i = 0; i < _slots.length; i++) ...[
-                              if (i > 0) const SizedBox(width: 8),
-                              _buildSlot(i),
-                            ],
-                          ],
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final compactHeight = constraints.maxHeight < 640;
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Text(
+                          'Your sentence',
+                          style: AppTypography.cardTitle(fontSize: 16),
                         ),
-                      ),
-                    ),
-                    const Spacer(),
-                    Text(
-                      'Word bank — drag into slots above',
-                      style: AppTypography.cardTitle(fontSize: 16),
-                    ),
-                    const SizedBox(height: 10),
-                    Expanded(
-                      flex: 2,
-                      child: DragTarget<_WordToken>(
-                        onWillAcceptWithDetails: (_) => !_sentenceLocked && !_feedbackBlocking,
-                        onAcceptWithDetails: (details) => _returnToBank(details.data),
-                        builder: (context, candidate, rejected) {
-                          return Container(
-                            width: double.infinity,
-                            padding: const EdgeInsets.all(12),
-                            decoration: BoxDecoration(
-                              color: candidate.isNotEmpty
-                                  ? AppColors.warmYellow.withValues(alpha: 0.2)
-                                  : Colors.white,
-                              borderRadius: BorderRadius.circular(16),
-                              border: Border.all(
-                                color: candidate.isNotEmpty
-                                    ? AppColors.warmYellow
-                                    : Colors.grey.shade300,
-                                width: 2,
-                              ),
-                            ),
-                            child: _bank.isEmpty
-                                ? Center(
-                                    child: Text(
-                                      'All words placed',
-                                      style: AppTypography.body(fontSize: 14, color: AppColors.bodyText),
-                                    ),
-                                  )
-                                : Wrap(
-                                    spacing: 10,
-                                    runSpacing: 10,
-                                    alignment: WrapAlignment.center,
-                                    children: _bank.map((t) => _buildDraggableChip(t)).toList(),
+                        SizedBox(height: compactHeight ? 6 : 10),
+                        Expanded(
+                          flex: compactHeight ? 4 : 5,
+                          child: SingleChildScrollView(
+                            child: _buildSentenceSlotsArea(),
+                          ),
+                        ),
+                        SizedBox(height: compactHeight ? 8 : 10),
+                        Text(
+                          'Word bank — drag into slots above',
+                          style: AppTypography.cardTitle(fontSize: 16),
+                        ),
+                        SizedBox(height: compactHeight ? 6 : 10),
+                        Expanded(
+                          flex: 3,
+                          child: DragTarget<_WordToken>(
+                            onWillAcceptWithDetails: (_) => !_sentenceLocked && !_feedbackBlocking,
+                            onAcceptWithDetails: (details) => _returnToBank(details.data),
+                            builder: (context, candidate, rejected) {
+                              return Container(
+                                width: double.infinity,
+                                padding: const EdgeInsets.all(12),
+                                decoration: BoxDecoration(
+                                  color: candidate.isNotEmpty
+                                      ? AppColors.warmYellow.withValues(alpha: 0.2)
+                                      : Colors.white,
+                                  borderRadius: BorderRadius.circular(16),
+                                  border: Border.all(
+                                    color: candidate.isNotEmpty
+                                        ? AppColors.warmYellow
+                                        : Colors.grey.shade300,
+                                    width: 2,
                                   ),
-                          );
-                        },
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    SizedBox(
-                      height: 52,
-                      child: FilledButton(
-                        onPressed: _allSlotsFilled && !_sentenceLocked && !_feedbackBlocking
-                            ? _onCheckSentence
-                            : null,
-                        style: FilledButton.styleFrom(
-                          backgroundColor: AppColors.freshGreen,
-                          foregroundColor: Colors.white,
-                          disabledBackgroundColor: Colors.grey.shade300,
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                                ),
+                                child: _bank.isEmpty
+                                    ? Center(
+                                        child: Text(
+                                          'All words placed',
+                                          style: AppTypography.body(fontSize: 14, color: AppColors.bodyText),
+                                        ),
+                                      )
+                                    : SingleChildScrollView(
+                                        child: Wrap(
+                                          spacing: compactHeight ? 8 : 10,
+                                          runSpacing: compactHeight ? 8 : 10,
+                                          alignment: WrapAlignment.center,
+                                          children: _bank.map((t) => _buildDraggableChip(t)).toList(),
+                                        ),
+                                      ),
+                              );
+                            },
+                          ),
                         ),
-                        child: Text(
-                          'Check sentence',
-                          style: AppTypography.cardTitle(fontSize: 17, color: Colors.white),
+                        const SizedBox(height: 12),
+                        SizedBox(
+                          height: 52,
+                          child: FilledButton(
+                            onPressed: _allSlotsFilled && !_sentenceLocked && !_feedbackBlocking
+                                ? _onCheckSentence
+                                : null,
+                            style: FilledButton.styleFrom(
+                              backgroundColor: AppColors.freshGreen,
+                              foregroundColor: Colors.white,
+                              disabledBackgroundColor: Colors.grey.shade300,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                            ),
+                            child: Text(
+                              'Submit sentence',
+                              style: AppTypography.cardTitle(fontSize: 17, color: Colors.white),
+                            ),
+                          ),
                         ),
-                      ),
-                    ),
-                  ],
+                      ],
+                    );
+                  },
                 ),
               ),
             ),
@@ -596,12 +610,13 @@ class _SentenceBuilderGameScreenState extends State<SentenceBuilderGameScreen>
   }
 
   Widget _buildFeedbackOverlay() {
+    final correctSentence = _levels[_levelIndex].words.join(' ');
     final (accent, icon, title, body) = switch (_overlay) {
       _FeedbackOverlay.wrongSentence => (
           const Color(0xFFE53935),
           Icons.edit_note_rounded,
           'Not quite right',
-          'All words are now in the word bank. Drag each one into a slot in order, then tap Check sentence.',
+          'Words return to the bank. Arrange them again, then tap Submit sentence when you are ready.',
         ),
       _FeedbackOverlay.rightSentence => (
           const Color(0xFF2E7D32),
@@ -653,6 +668,23 @@ class _SentenceBuilderGameScreenState extends State<SentenceBuilderGameScreen>
                   style: AppTypography.body(fontSize: 15, color: AppColors.bodyText, height: 1.4),
                   textAlign: TextAlign.center,
                 ),
+                if (_overlay == _FeedbackOverlay.wrongSentence) ...[
+                  const SizedBox(height: 14),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFFF3E0),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: const Color(0xFFFFCC80)),
+                    ),
+                    child: Text(
+                      'Correct sentence:\n$correctSentence',
+                      style: AppTypography.cardTitle(fontSize: 16, color: AppColors.heading),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                ],
               ],
             ),
           ),
@@ -661,7 +693,55 @@ class _SentenceBuilderGameScreenState extends State<SentenceBuilderGameScreen>
     );
   }
 
-  Widget _buildSlot(int index) {
+  Widget _buildSentenceSlotsArea() {
+    final n = _slots.length;
+    if (n == 0) return const SizedBox.shrink();
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final width = constraints.maxWidth;
+        final slotsPerLine = width >= 430 ? 4 : (width >= 330 ? 3 : 2);
+        final rows = <List<int>>[];
+        for (var start = 0; start < n; start += slotsPerLine) {
+          rows.add(List<int>.generate(
+            math.min(slotsPerLine, n - start),
+            (offset) => start + offset,
+          ));
+        }
+        final spacing = width < 360 ? 6.0 : 8.0;
+        final slotWidth =
+            ((width - spacing * (slotsPerLine - 1)) / slotsPerLine).clamp(70.0, 180.0);
+
+        return AnimatedBuilder(
+          animation: _shakeAnim,
+          builder: (context, child) {
+            return Transform.translate(
+              offset: Offset(_shakeAnim.value, 0),
+              child: child,
+            );
+          },
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (var r = 0; r < rows.length; r++) ...[
+                if (r > 0) SizedBox(height: spacing + 2),
+                Wrap(
+                  spacing: spacing,
+                  runSpacing: spacing,
+                  alignment: WrapAlignment.center,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    for (final i in rows[r]) _buildSlot(i, width: slotWidth),
+                  ],
+                ),
+              ],
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildSlot(int index, {required double width}) {
     final token = _slots[index];
     final lockedOk = _sentenceLocked && _allCorrect;
     final borderColor = lockedOk
@@ -705,8 +785,8 @@ class _SentenceBuilderGameScreenState extends State<SentenceBuilderGameScreen>
         final highlight = candidate.isNotEmpty;
         return AnimatedContainer(
           duration: const Duration(milliseconds: 160),
-          constraints: const BoxConstraints(minWidth: 72, minHeight: 52),
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+          constraints: BoxConstraints(minWidth: width, maxWidth: width, minHeight: 52),
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
           decoration: BoxDecoration(
             color: lockedOk
                 ? AppColors.freshGreen.withValues(alpha: 0.15)
@@ -771,18 +851,23 @@ class _SentenceBuilderGameScreenState extends State<SentenceBuilderGameScreen>
 
 class _StoryCompleteScreen extends StatelessWidget {
   final int stars;
-  final int correctSentences;
+  final int score;
+  final int firstTrySentences;
   final int totalSentences;
   final int attempts;
   final Duration timeSpent;
+  final VoidCallback onReplay;
   final VoidCallback onHome;
 
-  const _StoryCompleteScreen({
+  // ignore: prefer_const_constructors_in_immutables — non-const avoids hot-reload failures when fields change
+  _StoryCompleteScreen({
     required this.stars,
-    required this.correctSentences,
+    required this.score,
+    required this.firstTrySentences,
     required this.totalSentences,
     required this.attempts,
     required this.timeSpent,
+    required this.onReplay,
     required this.onHome,
   });
 
@@ -831,18 +916,39 @@ class _StoryCompleteScreen extends StatelessWidget {
                   ),
                 ),
               ),
-              const SizedBox(height: 24),
-              Text(
-                'Sentences completed: $correctSentences / $totalSentences',
-                style: AppTypography.cardTitle(fontSize: 18),
-              ),
               const SizedBox(height: 8),
               Text(
-                'Check attempts: $attempts · Time: ${_formatTime(timeSpent)}',
+                'Score: $score / 100',
+                textAlign: TextAlign.center,
+                style: AppTypography.body(fontSize: 15, color: AppColors.bodyText),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                'First try: $firstTrySentences / $totalSentences',
+                style: AppTypography.cardTitle(fontSize: 20, color: AppColors.heading),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'Submit attempts: $attempts · Time: ${_formatTime(timeSpent)}',
                 textAlign: TextAlign.center,
                 style: AppTypography.body(fontSize: 15),
               ),
               const Spacer(),
+              SizedBox(
+                width: double.infinity,
+                height: 52,
+                child: FilledButton(
+                  onPressed: onReplay,
+                  style: FilledButton.styleFrom(
+                    backgroundColor: AppColors.primaryBlue,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                  ),
+                  child: Text('Try again', style: AppTypography.cardTitle(fontSize: 17, color: Colors.white)),
+                ),
+              ),
+              const SizedBox(height: 12),
               SizedBox(
                 width: double.infinity,
                 height: 52,
@@ -864,3 +970,7 @@ class _StoryCompleteScreen extends StatelessWidget {
     );
   }
 }
+
+
+
+

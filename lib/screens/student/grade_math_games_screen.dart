@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -8,6 +9,8 @@ import 'package:video_player/video_player.dart';
 import '../../core/app_colors.dart';
 import '../../core/app_typography.dart';
 import '../../core/app_state.dart';
+import '../../core/game_scoring.dart';
+import '../../widgets/post_game_praise_gate.dart';
 
 enum MathGameKind { battle, adventure, master }
 
@@ -74,11 +77,18 @@ class _GradeMathGamesScreenState extends State<GradeMathGamesScreen>
   bool _showBattleHitVideo = false;
   bool _pendingBattleVideoPlay = false;
 
+  VideoPlayerController? _masterVideoController;
+  bool _showMasterHitVideo = false;
+  bool _pendingMasterHitVideoPlay = false;
+
   bool _introDismissed = false;
   DateTime? _sessionStart;
   int _earnedStars = 3;
+  int _finalScore = 0;
 
   int _correctAnswers = 0;
+  int _firstTryCorrect = 0;
+  int _tapsOnCurrentQuestion = 0;
   int _attempts = 0;
   int _questionIndex = 0;
   _MathQuestion? _currentQuestion;
@@ -88,8 +98,20 @@ class _GradeMathGamesScreenState extends State<GradeMathGamesScreen>
 
   bool _gameComplete = false;
 
-  /// Math Battle: gentle “try again” hint (no harsh sound).
+  /// Math Battle: gentle retry hint (no harsh sound).
   bool _battleSoftRetryHint = false;
+
+  /// Math Master (boss): brief wrong-answer modal (auto-dismisses).
+  bool _showBossWrongPopup = false;
+
+  void _resetPerQuestionInteractionState() {
+    _tapsOnCurrentQuestion = 0;
+    _selectedWrongIndex = null;
+    _selectedCorrectIndex = null;
+    _awaitingAdvance = false;
+    _battleSoftRetryHint = false;
+    _showBossWrongPopup = false;
+  }
 
   List<_MathQuestion> get _adventureLevels => const [
         _MathQuestion(
@@ -182,6 +204,8 @@ class _GradeMathGamesScreenState extends State<GradeMathGamesScreen>
     ]).animate(CurvedAnimation(parent: _attackController, curve: Curves.easeInOut));
     if (widget.kind == MathGameKind.battle) {
       _initBattleVideo();
+    } else if (widget.kind == MathGameKind.master) {
+      _initMasterVideo();
     }
 
     WidgetsBinding.instance.addPostFrameCallback((_) => _showIntroDialog());
@@ -229,10 +253,53 @@ class _GradeMathGamesScreenState extends State<GradeMathGamesScreen>
     await controller.play();
   }
 
+  Future<void> _initMasterVideo() async {
+    final controller = VideoPlayerController.asset('images/dragon.mp4');
+    await controller.initialize();
+    await controller.setLooping(false);
+    controller.addListener(() {
+      if (!mounted || !_showMasterHitVideo) return;
+      final value = controller.value;
+      if (!value.isPlaying &&
+          value.isInitialized &&
+          value.position >= value.duration &&
+          value.duration > Duration.zero) {
+        setState(() => _showMasterHitVideo = false);
+        controller.seekTo(Duration.zero);
+      }
+    });
+    if (!mounted) {
+      controller.dispose();
+      return;
+    }
+    setState(() {
+      _masterVideoController = controller;
+    });
+    if (_pendingMasterHitVideoPlay) {
+      _pendingMasterHitVideoPlay = false;
+      _playMasterHitVideo();
+    }
+  }
+
+  Future<void> _playMasterHitVideo() async {
+    final controller = _masterVideoController;
+    if (controller == null || !controller.value.isInitialized) {
+      _pendingMasterHitVideoPlay = true;
+      return;
+    }
+    _pendingMasterHitVideoPlay = false;
+    await controller.pause();
+    await controller.seekTo(Duration.zero);
+    if (!mounted) return;
+    setState(() => _showMasterHitVideo = true);
+    await controller.play();
+  }
+
   @override
   void dispose() {
     _attackController.dispose();
     _battleVideoController?.dispose();
+    _masterVideoController?.dispose();
     super.dispose();
   }
 
@@ -269,7 +336,10 @@ class _GradeMathGamesScreenState extends State<GradeMathGamesScreen>
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              SizedBox(height: 120, child: hint),
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: Center(child: hint),
+              ),
               const SizedBox(height: 16),
               Text(body, style: AppTypography.body(fontSize: 16, height: 1.45)),
               const SizedBox(height: 8),
@@ -306,10 +376,7 @@ class _GradeMathGamesScreenState extends State<GradeMathGamesScreen>
 
   void _loadNextQuestion() {
     setState(() {
-      _selectedWrongIndex = null;
-      _selectedCorrectIndex = null;
-      _awaitingAdvance = false;
-      _battleSoftRetryHint = false;
+      _resetPerQuestionInteractionState();
       switch (widget.kind) {
         case MathGameKind.battle:
           _currentQuestion = _generateBasicQuestion(_rng);
@@ -421,8 +488,9 @@ class _GradeMathGamesScreenState extends State<GradeMathGamesScreen>
 
   Future<void> _onOptionTap(int index, String label) async {
     final q = _currentQuestion;
-    if (q == null || _awaitingAdvance) return;
+    if (q == null || _awaitingAdvance || _showBossWrongPopup) return;
 
+    _tapsOnCurrentQuestion++;
     _attempts++;
     final isCorrect = label == q.correctAnswer;
 
@@ -439,8 +507,13 @@ class _GradeMathGamesScreenState extends State<GradeMathGamesScreen>
           _awaitingAdvance = true;
           _correctAnswers++;
         });
+        if (_tapsOnCurrentQuestion == 1) {
+          _firstTryCorrect++;
+        }
         if (widget.kind == MathGameKind.battle) {
           _playBattleHitVideo();
+        } else if (widget.kind == MathGameKind.master) {
+          _playMasterHitVideo();
         }
         await _attackController.forward(from: 0);
         HapticFeedback.mediumImpact();
@@ -454,6 +527,9 @@ class _GradeMathGamesScreenState extends State<GradeMathGamesScreen>
         await _attackController.forward(from: 0);
         if (!mounted) return;
         setState(() => _correctAnswers++);
+        if (_tapsOnCurrentQuestion == 1) {
+          _firstTryCorrect++;
+        }
       }
 
       if (!mounted) return;
@@ -479,26 +555,32 @@ class _GradeMathGamesScreenState extends State<GradeMathGamesScreen>
         _loadNextQuestion();
       }
     } else {
+      HapticFeedback.selectionClick();
+      SystemSound.play(SystemSoundType.alert);
+      setState(() {
+        _selectedWrongIndex = index;
+        _awaitingAdvance = true;
+        _battleSoftRetryHint = widget.kind == MathGameKind.battle;
+        _showBossWrongPopup = widget.kind == MathGameKind.master;
+      });
+      await Future<void>.delayed(const Duration(milliseconds: 800));
+      if (!mounted) return;
+
+      final reachedEnd = switch (widget.kind) {
+        MathGameKind.battle => _questionIndex + 1 >= _battleHitsToWin,
+        MathGameKind.adventure => _questionIndex + 1 >= _adventureSteps,
+        MathGameKind.master => _questionIndex + 1 >= _masterHitsToWin,
+      };
+      if (reachedEnd) {
+        _finishGame();
+        return;
+      }
+
       if (widget.kind == MathGameKind.battle) {
-        // Soft retry: no alert tone, light haptic, gentle copy.
-        HapticFeedback.lightImpact();
-        setState(() {
-          _selectedWrongIndex = index;
-          _battleSoftRetryHint = true;
-        });
-        await Future<void>.delayed(const Duration(milliseconds: 720));
-        if (!mounted) return;
-        setState(() {
-          _selectedWrongIndex = null;
-          _battleSoftRetryHint = false;
-        });
+        _loadNextQuestion();
       } else {
-        HapticFeedback.selectionClick();
-        SystemSound.play(SystemSoundType.alert);
-        setState(() => _selectedWrongIndex = index);
-        await Future<void>.delayed(const Duration(milliseconds: 550));
-        if (!mounted) return;
-        setState(() => _selectedWrongIndex = null);
+        setState(() => _questionIndex++);
+        _loadNextQuestion();
       }
     }
   }
@@ -510,25 +592,24 @@ class _GradeMathGamesScreenState extends State<GradeMathGamesScreen>
       MathGameKind.adventure => _adventureSteps,
       MathGameKind.master => _masterHitsToWin,
     };
-    final accuracy = _attempts > 0 ? (_correctAnswers / _attempts).clamp(0.0, 1.0) : 1.0;
-    final score = ((_correctAnswers / needed) * 70 + accuracy * 30).round().clamp(0, 100);
-    var stars = 1;
-    if (score >= 85) {
-      stars = 3;
-    } else if (score >= 60) {
-      stars = 2;
-    }
+    final r = scoreAndStarsProgressAccuracy(
+      progressed: _correctAnswers,
+      total: needed,
+      successCount: _correctAnswers,
+      attemptCount: _attempts,
+    );
     if (!mounted) return;
     context.read<AppState>().completeGame(
           widget.grade,
           widget.gameId,
-          score: score,
-          stars: stars,
+          score: r.score,
+          stars: r.stars,
           timeSpent: timeSpent,
         );
     if (!mounted) return;
     setState(() {
-      _earnedStars = stars;
+      _earnedStars = r.stars;
+      _finalScore = r.score;
       _gameComplete = true;
     });
   }
@@ -536,10 +617,13 @@ class _GradeMathGamesScreenState extends State<GradeMathGamesScreen>
   void _replay() {
     setState(() {
       _gameComplete = false;
+      _finalScore = 0;
       _correctAnswers = 0;
+      _firstTryCorrect = 0;
       _attempts = 0;
       _questionIndex = 0;
       _sessionStart = DateTime.now();
+      _resetPerQuestionInteractionState();
       _loadNextQuestion();
     });
   }
@@ -551,14 +635,23 @@ class _GradeMathGamesScreenState extends State<GradeMathGamesScreen>
   @override
   Widget build(BuildContext context) {
     if (_gameComplete) {
-      return _EndScreen(
-        kind: widget.kind,
-        stars: _earnedStars,
-        correct: _correctAnswers,
-        attempts: _attempts,
-        timeSpent: _sessionStart != null ? DateTime.now().difference(_sessionStart!) : Duration.zero,
-        onReplay: _replay,
-        onHome: _goHome,
+      final totalGoal = switch (widget.kind) {
+        MathGameKind.battle => _battleHitsToWin,
+        MathGameKind.adventure => _adventureSteps,
+        MathGameKind.master => _masterHitsToWin,
+      };
+      return PostGamePraiseGate(
+        child: _EndScreen(
+          kind: widget.kind,
+          stars: _earnedStars,
+          score: _finalScore,
+          firstTryCorrect: _firstTryCorrect,
+          totalGoal: totalGoal,
+          attempts: _attempts,
+          timeSpent: _sessionStart != null ? DateTime.now().difference(_sessionStart!) : Duration.zero,
+          onReplay: _replay,
+          onHome: _goHome,
+        ),
       );
     }
 
@@ -582,52 +675,103 @@ class _GradeMathGamesScreenState extends State<GradeMathGamesScreen>
         ),
         title: Text(_appBarTitle(), style: AppTypography.cardTitle(fontSize: 17)),
       ),
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              if (q != null)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 12),
-                  child: Text(
-                    q.text,
-                    textAlign: TextAlign.center,
-                    style: AppTypography.screenTitle(fontSize: widget.kind == MathGameKind.adventure ? 19 : 22)
-                        .copyWith(height: 1.35),
-                  ),
-                ),
-              if (widget.kind == MathGameKind.battle && _battleSoftRetryHint)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 10),
-                  child: Material(
-                    color: const Color(0xFFE8EAF6),
-                    borderRadius: BorderRadius.circular(14),
-                    elevation: 0,
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                      child: Row(
-                        children: [
-                          Icon(Icons.waving_hand_rounded, color: AppColors.primaryBlue.withValues(alpha: 0.9), size: 24),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Text(
-                              'Almost — try another answer. You’ve got this!',
-                              style: AppTypography.body(fontSize: 15, color: AppColors.heading, height: 1.35),
-                            ),
-                          ),
-                        ],
+      body: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  if (q != null)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: Text(
+                        q.text,
+                        textAlign: TextAlign.center,
+                        style: AppTypography.screenTitle(fontSize: widget.kind == MathGameKind.adventure ? 19 : 22)
+                            .copyWith(height: 1.35),
                       ),
                     ),
+                  if (widget.kind == MathGameKind.battle && _battleSoftRetryHint)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 10),
+                      child: Material(
+                        color: const Color(0xFFE8EAF6),
+                        borderRadius: BorderRadius.circular(14),
+                        elevation: 0,
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                          child: Row(
+                            children: [
+                              Icon(Icons.waving_hand_rounded, color: AppColors.primaryBlue.withValues(alpha: 0.9), size: 24),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Text(
+                                  'Almost — try another answer. You’ve got this!',
+                                  style: AppTypography.body(fontSize: 15, color: AppColors.heading, height: 1.35),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  Expanded(
+                    child: _buildMiddleVisual(),
                   ),
-                ),
-              Expanded(
-                child: _buildMiddleVisual(),
+                  const SizedBox(height: 12),
+                  if (q != null) _buildOptions(q),
+                ],
               ),
-              const SizedBox(height: 12),
-              if (q != null) _buildOptions(q),
-            ],
+            ),
+          ),
+          if (_showBossWrongPopup) _buildBossWrongAnswerOverlay(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBossWrongAnswerOverlay() {
+    const accent = Color(0xFFE53935);
+    return Positioned.fill(
+      child: Material(
+        color: Colors.black.withValues(alpha: 0.45),
+        child: Center(
+          child: Container(
+            constraints: const BoxConstraints(maxWidth: 320),
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 22),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: accent, width: 3),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.2),
+                  blurRadius: 10,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.cancel_rounded, color: accent, size: 56),
+                const SizedBox(height: 12),
+                Text(
+                  'Wrong answer',
+                  style: AppTypography.cardTitle(fontSize: 24, color: accent),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Read the question again, then choose another option.',
+                  style: AppTypography.body(fontSize: 15, color: AppColors.bodyText, height: 1.4),
+                  textAlign: TextAlign.center,
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -667,7 +811,7 @@ class _GradeMathGamesScreenState extends State<GradeMathGamesScreen>
           color: const Color(0xFF7C4DFF),
           trackColor: Colors.white.withValues(alpha: 0.85),
         ),
-        const SizedBox(height: 20),
+        const SizedBox(height: 12),
         AnimatedBuilder(
           animation: _attackController,
           builder: (context, child) {
@@ -758,7 +902,7 @@ class _GradeMathGamesScreenState extends State<GradeMathGamesScreen>
           color: const Color(0xFFE53935),
           trackColor: Colors.white.withValues(alpha: 0.9),
         ),
-        const SizedBox(height: 20),
+        const SizedBox(height: 12),
         AnimatedBuilder(
           animation: _attackController,
           builder: (context, child) {
@@ -789,7 +933,33 @@ class _GradeMathGamesScreenState extends State<GradeMathGamesScreen>
               ],
             ),
             alignment: Alignment.center,
-            child: const Text('🐉', style: TextStyle(fontSize: 76)),
+            child: ClipOval(
+              child: SizedBox(
+                width: 150,
+                height: 150,
+                child: _showMasterHitVideo && _masterVideoController != null
+                    ? FittedBox(
+                        fit: BoxFit.cover,
+                        child: SizedBox(
+                          width: _masterVideoController!.value.isInitialized &&
+                                  _masterVideoController!.value.size.width > 0
+                              ? _masterVideoController!.value.size.width
+                              : 150,
+                          height: _masterVideoController!.value.isInitialized &&
+                                  _masterVideoController!.value.size.height > 0
+                              ? _masterVideoController!.value.size.height
+                              : 150,
+                          child: VideoPlayer(_masterVideoController!),
+                        ),
+                      )
+                    : Image.asset(
+                        'images/dragon.png',
+                        fit: BoxFit.cover,
+                        errorBuilder: (context, _, __) =>
+                            const Text('🐉', style: TextStyle(fontSize: 76)),
+                      ),
+              ),
+            ),
           ),
         ),
         const SizedBox(height: 12),
@@ -1038,8 +1208,39 @@ class _IntroHintBoss extends StatelessWidget {
   Widget build(BuildContext context) {
     return Column(
       children: [
-        const Text('🐉', style: TextStyle(fontSize: 56)),
-        const SizedBox(height: 8),
+        Container(
+          width: 108,
+          height: 108,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            border: Border.all(
+              color: const Color(0xFFFF7043).withValues(alpha: 0.9),
+              width: 3,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.deepOrange.withValues(alpha: 0.22),
+                blurRadius: 12,
+                offset: const Offset(0, 4),
+              ),
+            ],
+          ),
+          child: ClipOval(
+            child: Image.asset(
+              'images/dragon.png',
+              width: 108,
+              height: 108,
+              fit: BoxFit.cover,
+              filterQuality: FilterQuality.medium,
+              errorBuilder: (context, _, __) => Container(
+                color: const Color(0xFFFFE0D5),
+                alignment: Alignment.center,
+                child: const Text('🐉', style: TextStyle(fontSize: 56)),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
         ClipRRect(
           borderRadius: BorderRadius.circular(6),
           child: LinearProgressIndicator(
@@ -1057,16 +1258,21 @@ class _IntroHintBoss extends StatelessWidget {
 class _EndScreen extends StatelessWidget {
   final MathGameKind kind;
   final int stars;
-  final int correct;
+  final int score;
+  final int firstTryCorrect;
+  final int totalGoal;
   final int attempts;
   final Duration timeSpent;
   final VoidCallback onReplay;
   final VoidCallback onHome;
 
-  const _EndScreen({
+  // ignore: prefer_const_constructors_in_immutables — non-const avoids hot-reload failures when fields change
+  _EndScreen({
     required this.kind,
     required this.stars,
-    required this.correct,
+    required this.score,
+    required this.firstTryCorrect,
+    required this.totalGoal,
     required this.attempts,
     required this.timeSpent,
     required this.onReplay,
@@ -1128,9 +1334,21 @@ class _EndScreen extends StatelessWidget {
                   ),
                 ),
               ),
-              const SizedBox(height: 20),
+              const SizedBox(height: 8),
               Text(
-                'Correct: $correct · Attempts: $attempts · Time: ${mins}m ${secs}s',
+                'Score: $score / 100',
+                textAlign: TextAlign.center,
+                style: AppTypography.body(fontSize: 15, color: AppColors.bodyText),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                'First try: $firstTryCorrect / $totalGoal',
+                textAlign: TextAlign.center,
+                style: AppTypography.cardTitle(fontSize: 20, color: AppColors.heading),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Total attempts: $attempts · Time: ${mins}m ${secs}s',
                 textAlign: TextAlign.center,
                 style: AppTypography.body(fontSize: 14, height: 1.4),
               ),
@@ -1145,7 +1363,7 @@ class _EndScreen extends StatelessWidget {
                     foregroundColor: Colors.white,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                   ),
-                  child: Text('Replay', style: AppTypography.cardTitle(fontSize: 16).copyWith(color: Colors.white)),
+                  child: Text('Try again', style: AppTypography.cardTitle(fontSize: 16).copyWith(color: Colors.white)),
                 ),
               ),
               const SizedBox(height: 12),
